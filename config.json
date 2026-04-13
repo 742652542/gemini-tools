@@ -1,0 +1,8 @@
+{
+  "s3": {
+    "access_key_id": "PL6N7tFuPEjJ492rlUYx",
+    "secret_access_key": "FfDsThNU9oWERokOb12olNn15d8DegMlQj0Wkjns",
+    "endpoint_url": "https://s3.ap-southeast-1.idrivee2.com",
+    "bucket_name": "ixspy-cn"
+  }
+}
