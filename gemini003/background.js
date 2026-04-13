@@ -129,7 +129,7 @@ async function handleGenerateTask(task) {
 
         // 2. 注册任务状态
         // 针对视频生成设置 15 分钟超时，其他默认 5 分钟
-        const timeoutDuration = task.action === "generate_video" ? 900000 : 300000;
+        const timeoutDuration = task.action === "generate_video" ? 900000 : 360000;
         const timeoutId = setTimeout(() => {
             if (taskRegistry.has(taskId)) { // Check if task is still running
                 console.error(`⏰ [Task: ${taskId}] 任务执行超时 (${timeoutDuration/60000}分钟)，强制关闭!`);

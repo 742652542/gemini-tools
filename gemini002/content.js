@@ -105,7 +105,7 @@ function waitForVideoReady(timeoutMs = 900000) { // 默认 15 分钟
 /**
  * 等待回答生成完成 (监听 DOM 按钮 - 适用于文本和图片)
  */
-function waitForReplyComplete(timeoutMs = 120000) {
+function waitForReplyComplete(timeoutMs = 240000) {
     return new Promise((resolve) => {
         console.log("⏳ [3/5] 监听回答生成中...");
         
@@ -866,7 +866,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
                 return_data = videoResult.data; // 保存 URL ID
             }
         } else {
-            // 图片和文本使用常规监听 (2分钟)
+            // 图片和文本使用常规监听 (3分钟)
             is_finnal = await waitForReplyComplete(); 
         }
 
