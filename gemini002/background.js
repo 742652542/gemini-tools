@@ -3,7 +3,7 @@
 // ==========================================
 // 0. 全局状态管理
 // ==========================================
-const CLIENT_ID = "bot_001";
+const CLIENT_ID = "bot_002";
 const WS_URL = `ws://127.0.0.1:9091/ws/${CLIENT_ID}`;
 let socket = null;
 let heartbeatInterval = null;

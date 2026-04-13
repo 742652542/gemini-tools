@@ -19,6 +19,8 @@ from botocore.client import Config
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
+from cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
+from git_auto_sync import start_git_auto_sync, stop_git_auto_sync
 
 # pip install fastapi uvicorn pydantic httpx boto3
 # pip install "uvicorn[standard]" fastapi
@@ -39,6 +41,20 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
 
 app = FastAPI()
 DEBUG = False
+
+
+@app.on_event("startup")
+async def startup_event():
+    start_git_auto_sync(app)
+    start_cleanup_scheduler(app)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop_cleanup_scheduler(app)
+    await stop_git_auto_sync(app)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     # 获取原始请求体
