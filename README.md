@@ -1,5 +1,11 @@
 # gemini-tools [![Build Status](https://travis-ci.org/arq5x/gemini.png?branch=master)](https://travis-ci.org/arq5x/gemini)
 
+## 下载git
+
+```bash
+https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/Git-2.53.0.2-64-bit.exe
+```
+
 ## server.py 依赖安装
 
 `server.py` 使用到的第三方 Python 依赖如下：
