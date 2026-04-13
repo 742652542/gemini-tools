@@ -1,1 +1,1 @@
-# gemini-tools
+# gemini-tools [![Build Status](https://travis-ci.org/arq5x/gemini.png?branch=master)](https://travis-ci.org/arq5x/gemini)
