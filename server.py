@@ -45,7 +45,7 @@ DEBUG = False
 
 @app.on_event("startup")
 async def startup_event():
-    start_git_auto_sync(app)
+    await start_git_auto_sync(app)
     start_cleanup_scheduler(app)
 
 

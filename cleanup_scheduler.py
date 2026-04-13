@@ -1,13 +1,12 @@
 import asyncio
 import os
 import shutil
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 TARGET_DIRECTORIES = ["task_results", "task_files", "task_wait"]
 RETENTION_DAYS = 30
-BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _iter_expired_entries(base_dir: str, cutoff_timestamp: float):

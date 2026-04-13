@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 REMOTE_REPO_URL = "https://github.com/742652542/gemini-tools.git"
-SYNC_INTERVAL_SECONDS = 180
 PRESERVED_DIRECTORIES = ["task_results", "task_files", "task_wait"]
 
 
@@ -90,42 +89,15 @@ def _sync_repository(repo_dir: str):
         print(f"[git-auto-sync] Preserved directories: {', '.join(preserved_dirs)}")
 
 
-async def _git_auto_sync_loop(repo_dir: str, stop_event: asyncio.Event):
-    while not stop_event.is_set():
-        try:
-            await asyncio.to_thread(_sync_repository, repo_dir)
-        except Exception as exc:
-            print(f"[git-auto-sync] Unexpected sync error: {exc}")
-
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=SYNC_INTERVAL_SECONDS)
-        except asyncio.TimeoutError:
-            continue
-
-
-def start_git_auto_sync(app):
-    if getattr(app.state, "git_auto_sync_task", None):
+async def start_git_auto_sync(app):
+    if getattr(app.state, "git_auto_sync_completed", False):
         return
 
     repo_dir = str(Path(__file__).resolve().parent)
-    stop_event = asyncio.Event()
-    app.state.git_auto_sync_stop_event = stop_event
-    app.state.git_auto_sync_task = asyncio.create_task(_git_auto_sync_loop(repo_dir, stop_event))
-    print(f"[git-auto-sync] Background sync started for {REMOTE_REPO_URL}")
+    await asyncio.to_thread(_sync_repository, repo_dir)
+    app.state.git_auto_sync_completed = True
+    print(f"[git-auto-sync] Startup sync completed for {REMOTE_REPO_URL}")
 
 
 async def stop_git_auto_sync(app):
-    stop_event = getattr(app.state, "git_auto_sync_stop_event", None)
-    task = getattr(app.state, "git_auto_sync_task", None)
-
-    if stop_event is None or task is None:
-        return
-
-    stop_event.set()
-    try:
-        await task
-    except Exception as exc:
-        print(f"[git-auto-sync] Background sync stopped with error: {exc}")
-    finally:
-        app.state.git_auto_sync_stop_event = None
-        app.state.git_auto_sync_task = None
+    return
