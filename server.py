@@ -1,4 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import base64
 from typing import Dict, Optional
@@ -39,20 +40,26 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     # Set to None so we can handle it gracefully
     S3_ACCESS_KEY_ID = S3_SECRET_ACCESS_KEY = S3_ENDPOINT_URL = S3_BUCKET_NAME = None
 
-app = FastAPI()
-DEBUG = False
-
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[server] Startup begin.")
+    print("[server] Running startup git sync...")
     await start_git_auto_sync(app)
+    print("[server] Startup git sync finished.")
     start_cleanup_scheduler(app)
+    print("[server] Cleanup scheduler started.")
+
+    try:
+        yield
+    finally:
+        print("[server] Shutdown begin.")
+        await stop_cleanup_scheduler(app)
+        await stop_git_auto_sync(app)
+        print("[server] Shutdown finished.")
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    await stop_cleanup_scheduler(app)
-    await stop_git_auto_sync(app)
+app = FastAPI(lifespan=lifespan)
+DEBUG = False
 
 
 @app.exception_handler(RequestValidationError)
