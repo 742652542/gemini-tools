@@ -129,6 +129,16 @@ function waitForReplyComplete(timeoutMs = 240000) {
                     observer.disconnect();
                     clearTimeout(timer);
                     resolve(true);
+                }else{
+                    const container = document.querySelectorAll("response-container");
+                    if (container.length == 0) {
+                        console.warn("⚠️ 没有生成内容");
+                        observer.disconnect();
+                        clearTimeout(timer);
+                        resolve(true);
+                    }else{
+                        console.log("✅ 生成失败");
+                    }
                 }
             }
         });
@@ -330,6 +340,11 @@ async function getLatestReplyImages(task_id) {
 
     const responseBlocks = document.querySelectorAll('message-content');
     if (responseBlocks.length === 0){
+        const container = document.querySelectorAll("response-container");
+        if (container.length === 0) {
+            console.log("触发限制，请检查提示词");
+            return { status: 'error', data: 'show-触发限制，请检查提示词' };
+        }
         console.log("未找到回答");
         return { status: 'error', data: '未找到回答' };
     } 
