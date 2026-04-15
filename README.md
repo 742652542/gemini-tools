@@ -6,6 +6,12 @@
 https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/Git-2.53.0.2-64-bit.exe
 ```
 
+## 同步项目
+
+```bash
+git clone https://github.com/742652542/gemini-tools.git
+```
+
 ## server.py 依赖安装
 
 `server.py` 使用到的第三方 Python 依赖如下：
@@ -19,7 +25,7 @@ https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/Git-2
 安装命令：
 
 ```bash
-pip install "uvicorn[standard]" fastapi pydantic httpx boto3
+py -m pip install "uvicorn[standard]" fastapi pydantic httpx boto3
 ```
 
 ## 运行前额外要求
