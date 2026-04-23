@@ -65,7 +65,7 @@ for directory in [RESULTS_DIR, FILES_DIR, WAIT_DIR]:
 class TaskRequest(BaseModel):
     action: str
     prompt: str
-    source: str
+    source: str = "gemini"
     model: str
     image: Optional[object] = None
     client_id: Optional[str] = None
