@@ -1101,7 +1101,7 @@ async function typeAndSend(
     const completed = await waitForReplyByAction(action);
     if (!completed) {
       if (action === 'generate_image' && imageReplyFailureText) {
-        throw new Error(imageReplyFailureText);
+        throw new Error("show-"+imageReplyFailureText);
       }
       throw new Error(action === 'generate_image' ? '等待生图完成超时' : '等待对话完成超时');
     }

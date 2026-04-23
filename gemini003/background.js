@@ -170,6 +170,10 @@ async function handleGenerateTask(task) {
                         task_model: task.model,    // 透传 model
                         source: taskSource
                     }).catch(err => {
+                        if (!taskRegistry.has(taskId)) {
+                            console.log(`ℹ️ [Task: ${taskId}] Content script 响应通道已关闭，但任务已结束，忽略通信失败误报`);
+                            return;
+                        }
                         console.error(`❌ [Task: ${taskId}] 发送指令失败:`, err);
                         // --- 修改点 1: 拆分调用 ---
                         const payload = {
