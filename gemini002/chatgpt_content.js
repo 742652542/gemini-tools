@@ -759,9 +759,10 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
       const becameReadyOnSameTurn = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && !initialTurnWasReady && readyNow;
       const latest = getLatestAssistantMessage();
       const hasImageFallback = hasImageInAssistantMessage(latest) || !!(latestTurn && latestTurn.querySelector('img'));
+      const hasActualImageOutput = readyNow || hasImageFallback;
       const hasReplyAction = !!(latestTurn && latestTurn.querySelector('button[aria-label*="复制回复"], button[aria-label*="Copy"]'));
       const textLength = getLastAssistantTextContent().length;
-      const textCandidateReady = !stopBtn && !loadingNow && !hasTransitionSurface && textLength > 0;
+      const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0;
       const canUseSameTurnFallback = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && initialTurnWasGenerating && !loadingNow;
 
       const stateKey = [
@@ -798,7 +799,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         return;
       }
 
-      if (!stopBtn && (hasNewAssistantReply || becameReadyOnSameTurn) && (readyNow || hasImageFallback) && hasReplyAction && Date.now() - startTime > 1000) {
+      if (!stopBtn && (hasNewAssistantReply || becameReadyOnSameTurn) && hasActualImageOutput && hasReplyAction && Date.now() - startTime > 1000) {
         console.log('✅ [生图分支] 检测到图片回复完成');
         finish(true);
         return;
@@ -998,61 +999,6 @@ async function notifyTaskCompleted(taskId, action, data, message, urlId, error) 
   });
 }
 
-function base64ToBlob(base64Data) {
-  const mimeType = extractMimeFromBase64(base64Data) || 'image/png';
-  const cleanBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
-  const byteCharacters = atob(cleanBase64);
-  const byteArrays = [];
-
-  for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-    const slice = byteCharacters.slice(offset, offset + 512);
-    const byteNumbers = new Array(slice.length);
-    for (let i = 0; i < slice.length; i++) {
-      byteNumbers[i] = slice.charCodeAt(i);
-    }
-    byteArrays.push(new Uint8Array(byteNumbers));
-  }
-
-  return {
-    mimeType,
-    blob: new Blob(byteArrays, { type: mimeType })
-  };
-}
-
-async function triggerImageDownload(taskId, base64Image) {
-  if (!base64Image || typeof base64Image !== 'string') {
-    throw new Error('缺少可下载的图片数据');
-  }
-
-  await new Promise((resolve) => {
-    chrome.runtime.sendMessage(
-      {
-        action: 'prepare_intercept',
-        task_id: taskId,
-        task_action: 'generate_image'
-      },
-      () => resolve()
-    );
-  });
-
-  await sleep(300);
-
-  const { mimeType, blob } = base64ToBlob(base64Image);
-  const extension = mimeType.split('/')[1] || 'png';
-  const objectUrl = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = objectUrl;
-  anchor.download = `chatgpt-${taskId}.${extension}`;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-
-  setTimeout(() => {
-    URL.revokeObjectURL(objectUrl);
-  }, 30000);
-}
-
 async function typeAndSend(
   text = '帮我查询一下今天的天气',
   task_id = '',
@@ -1101,7 +1047,7 @@ async function typeAndSend(
     const completed = await waitForReplyByAction(action);
     if (!completed) {
       if (action === 'generate_image' && imageReplyFailureText) {
-        throw new Error("show-"+imageReplyFailureText);
+        throw new Error('show-'+imageReplyFailureText);
       }
       throw new Error(action === 'generate_image' ? '等待生图完成超时' : '等待对话完成超时');
     }
@@ -1129,10 +1075,6 @@ async function typeAndSend(
     }
 
     await notifyTaskCompleted(task_id, action, returnData, returnMessage, urlId, null);
-
-    // if (action === 'generate_image') {
-    //   await triggerImageDownload(task_id, Array.isArray(returnData) ? returnData[0] : null);
-    // }
 
     if (log) log.innerText = action === 'generate_image' ? '✅ 生图分支完成' : '✅ 对话分支完成';
     console.log(`✅ [任务] 完成，总耗时 ${Date.now() - taskStartAt}ms`);
