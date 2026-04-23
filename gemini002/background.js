@@ -145,6 +145,7 @@ async function handleGenerateTask(task) {
         taskRegistry.set(taskId, {
             tab_id: tabId,
             task_action: task.action, // 保存 action 到注册表中
+            task_source: taskSource,
             download_timer: null,
             is_waiting_download: true,
             timeout_id: timeoutId
@@ -343,6 +344,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             // 文本任务没有后续的下载动作，直接清理
             if (task_action === "generate_text") {
                 console.log(`🧹 [Task: ${task_id}] 文本任务无需等待下载，立即清理资源并关闭 Tab`);
+                closeTabAndCleanup(task_id);
+            } else if (taskData.task_source === "chatgpt") {
+                console.log(`🧹 [Task: ${task_id}] ChatGPT 图片任务已直接回传 base64，立即清理资源并关闭 Tab`);
                 closeTabAndCleanup(task_id);
             } else {
                 console.log(`⏳ [Task: ${task_id}] 等待图片下载完成...`);
