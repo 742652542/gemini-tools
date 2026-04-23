@@ -1130,9 +1130,9 @@ async function typeAndSend(
 
     await notifyTaskCompleted(task_id, action, returnData, returnMessage, urlId, null);
 
-    if (action === 'generate_image') {
-      await triggerImageDownload(task_id, Array.isArray(returnData) ? returnData[0] : null);
-    }
+    // if (action === 'generate_image') {
+    //   await triggerImageDownload(task_id, Array.isArray(returnData) ? returnData[0] : null);
+    // }
 
     if (log) log.innerText = action === 'generate_image' ? '✅ 生图分支完成' : '✅ 对话分支完成';
     console.log(`✅ [任务] 完成，总耗时 ${Date.now() - taskStartAt}ms`);
