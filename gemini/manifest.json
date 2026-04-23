@@ -12,7 +12,11 @@
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
-    "*://*.googleusercontent.com/*"
+    "*://*.googleusercontent.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://*.oaiusercontent.com/*",
+    "https://*.oaistatic.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -26,12 +30,34 @@
       "matches": ["*://*.googleusercontent.com/*"],
       "js": ["image_grabber.js"],
       "run_at": "document_end"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["chatgpt_content.js"]
+    },
+    {
+      "matches": [
+        "https://*.oaiusercontent.com/*",
+        "https://*.oaistatic.com/*"
+      ],
+      "js": ["chatgpt_image_grabber.js"],
+      "run_at": "document_end"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": ["injected.js"],
       "matches": ["https://gemini.google.com/*"]
+    },
+    {
+      "resources": ["chatgpt_injected.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ]
     }
   ]
 }

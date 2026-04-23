@@ -1,5 +1,4 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import base64
 from typing import Dict, Optional
@@ -20,8 +19,6 @@ from botocore.client import Config
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.requests import Request
-from cleanup_scheduler import start_cleanup_scheduler, stop_cleanup_scheduler
-from git_auto_sync import start_git_auto_sync, stop_git_auto_sync
 
 # pip install fastapi uvicorn pydantic httpx boto3
 # pip install "uvicorn[standard]" fastapi
@@ -40,28 +37,8 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     # Set to None so we can handle it gracefully
     S3_ACCESS_KEY_ID = S3_SECRET_ACCESS_KEY = S3_ENDPOINT_URL = S3_BUCKET_NAME = None
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("[server] Startup begin.")
-    print("[server] Running startup git sync...")
-    await start_git_auto_sync(app)
-    print("[server] Startup git sync finished.")
-    start_cleanup_scheduler(app)
-    print("[server] Cleanup scheduler started.")
-
-    try:
-        yield
-    finally:
-        print("[server] Shutdown begin.")
-        await stop_cleanup_scheduler(app)
-        await stop_git_auto_sync(app)
-        print("[server] Shutdown finished.")
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 DEBUG = False
-
-
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     # 获取原始请求体
@@ -88,6 +65,7 @@ for directory in [RESULTS_DIR, FILES_DIR, WAIT_DIR]:
 class TaskRequest(BaseModel):
     action: str
     prompt: str
+    source: str
     model: str
     image: Optional[object] = None
     client_id: Optional[str] = None
@@ -423,6 +401,12 @@ def save_task_file(task_id: str, data: dict):
                 print(f"Watermark processing successful: {image_disk_path}")
             except subprocess.CalledProcessError as e:
                 print(f"Failed to execute GeminiWatermarkTool: {e}")
+        elif action == "generate_video":
+            try:
+                subprocess.run(f'GeminiWatermarkTool-Video.exe "{image_disk_path}"', shell=True, check=True)
+                print(f"Video watermark processing successful: {image_disk_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to execute GeminiWatermarkTool-Video.exe: {e}")
         
         object_name = f"ai/img/task_results/{date_folder}/{task_id}{str(datetime.now().timestamp())}{file_extension}"        
         cdn_url = upload_to_s3(image_disk_path, object_name)
@@ -521,6 +505,7 @@ async def send_task(request: TaskRequest):
         "task_id": task_id,
         "model": model,
         "prompt": request.prompt,
+        "source": request.source,
         "image": request.image 
         }
     elif action == "generate_text":
@@ -530,6 +515,7 @@ async def send_task(request: TaskRequest):
         "is_continue": is_continue,
         "task_id": task_id,
         "prompt": request.prompt,
+        "source": request.source,
         "image": request.image 
         }
     elif action == "generate_video":
@@ -539,6 +525,7 @@ async def send_task(request: TaskRequest):
         "is_continue": is_continue,
         "task_id": task_id,
         "prompt": request.prompt,
+        "source": request.source,
         "image": request.image
         }    
     else:

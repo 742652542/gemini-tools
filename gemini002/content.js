@@ -881,7 +881,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
                 return_data = videoResult.data; // 保存 URL ID
             }
         } else {
-            // 图片和文本使用常规监听 (3分钟)
+            // 图片和文本使用常规监听 (2分钟)
             is_finnal = await waitForReplyComplete(); 
         }
 

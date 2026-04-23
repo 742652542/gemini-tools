@@ -115,10 +115,13 @@ connectWebSocket();
 
 async function handleGenerateTask(task) {
     const taskId = task.task_id;
+    const taskSource = task.source === "chatgpt" ? "chatgpt" : "gemini";
+    const targetUrl = taskSource === "chatgpt" ? "https://chatgpt.com/" : "https://gemini.google.com/app";
     console.log(`🚀 [Task: ${taskId}] 收到新任务，准备创建独立 Tab...`);
+    console.log(`🧭 [Task: ${taskId}] 来源: ${taskSource}, 目标页面: ${targetUrl}`);
 
     // 1. 创建新 Tab
-    chrome.tabs.create({ url: "https://gemini.google.com/app", active: true }, (newTab) => {
+    chrome.tabs.create({ url: targetUrl, active: true }, (newTab) => {
         if (!newTab || !newTab.id) {
             sendToPython({ status: "error", task_id: taskId, error: "Tab 创建失败" });
             return;
@@ -163,7 +166,8 @@ async function handleGenerateTask(task) {
                         image: task.image,
                         task_id: taskId,
                         task_action: task.action,  // 透传 action
-                        task_model: task.model     // 透传 model
+                        task_model: task.model,    // 透传 model
+                        source: taskSource
                     }).catch(err => {
                         console.error(`❌ [Task: ${taskId}] 发送指令失败:`, err);
                         // --- 修改点 1: 拆分调用 ---
@@ -350,7 +354,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // ------------------------------------------------
     // C. 辅助：新开 Tab 下载图片 (恢复原有逻辑)
     // ------------------------------------------------
-    if (request.action === "downloadImageViaTab") {
+    if (request.action === "downloadImageViaTab" || request.action === "downloadImageDirect") {
         const targetUrl = request.url;
         console.log("🚀 [Background] 准备打开辅助 Tab 下载:", targetUrl);
 
