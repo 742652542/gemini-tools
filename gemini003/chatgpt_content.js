@@ -676,6 +676,7 @@ function waitForTextReplyComplete(timeoutMs = 180000) {
 
     const cleanup = () => {
       observer.disconnect();
+      clearInterval(pollTimer);
       clearTimeout(timer);
     };
 
@@ -825,6 +826,8 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
 
     const observer = new MutationObserver(() => check());
     observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+
+    const pollTimer = setInterval(() => check(), 1000);
 
     const timer = setTimeout(() => {
       const finalText = getLastAssistantTextContent();
