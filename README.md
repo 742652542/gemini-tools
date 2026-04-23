@@ -6,6 +6,14 @@
 https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/Git-2.53.0.2-64-bit.exe
 ```
 
+
+## 下载vc库
+
+```bash
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+```
+
+
 ## 同步项目
 
 ```bash
