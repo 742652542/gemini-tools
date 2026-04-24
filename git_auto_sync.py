@@ -101,3 +101,9 @@ async def start_git_auto_sync(app):
 
 async def stop_git_auto_sync(app):
     return
+
+
+if __name__ == "__main__":
+    repo_dir = str(Path(__file__).resolve().parent)
+    _sync_repository(repo_dir)
+    print(f"[git-auto-sync] Manual sync completed for {REMOTE_REPO_URL}")
