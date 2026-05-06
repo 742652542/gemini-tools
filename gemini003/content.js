@@ -73,8 +73,8 @@ function waitForVideoReady(timeoutMs = 900000) { // 默认 15 分钟
             const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
                                 lastBlock.querySelector('button[aria-label="Download video"]');
                                 
-            // if (textContent.includes("您的视频已准备就绪") || textContent.includes("your video is ready") || downloadBtn) {
-            if (downloadBtn) {
+            if (textContent.includes("您的视频已准备就绪") || textContent.includes("your video is ready!") || downloadBtn) {
+            // if (downloadBtn) {
                 console.log("✅ 视频生成完毕！");
 
                 observer.disconnect();
