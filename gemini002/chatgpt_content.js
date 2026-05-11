@@ -692,9 +692,8 @@ function waitForTextReplyComplete(timeoutMs = 180000) {
       const hasNewAssistantReply = !!latestTurnIdentity && latestTurnIdentity !== initialTurnIdentity;
       const textLength = getLastAssistantTextContent().length;
       const hasText = textLength > 0;
-      const hasReplyAction = !!(latestTurn && latestTurn.querySelector('button[aria-label*="复制回复"], button[aria-label*="Copy"]'));
 
-      const baseReady = !stopBtn && hasNewAssistantReply && hasText && hasReplyAction && Date.now() - startTime > 1000;
+      const baseReady = !stopBtn && hasNewAssistantReply && hasText && Date.now() - startTime > 1000;
       if (!baseReady) {
         stableStartAt = 0;
         lastTextLength = -1;
@@ -715,6 +714,8 @@ function waitForTextReplyComplete(timeoutMs = 180000) {
 
     const observer = new MutationObserver(() => check());
     observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+
+    const pollTimer = setInterval(() => check(), 1000);
 
     const timer = setTimeout(() => {
       console.warn('⚠️ [文本分支] 等待回复超时');
@@ -741,6 +742,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
 
     const cleanup = () => {
       observer.disconnect();
+      clearInterval(pollTimer);
       clearTimeout(timer);
     };
 
@@ -761,7 +763,6 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
       const latest = getLatestAssistantMessage();
       const hasImageFallback = hasImageInAssistantMessage(latest) || !!(latestTurn && latestTurn.querySelector('img'));
       const hasActualImageOutput = readyNow || hasImageFallback;
-      const hasReplyAction = !!(latestTurn && latestTurn.querySelector('button[aria-label*="复制回复"], button[aria-label*="Copy"]'));
       const textLength = getLastAssistantTextContent().length;
       const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0;
       const canUseSameTurnFallback = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && initialTurnWasGenerating && !loadingNow;
@@ -773,7 +774,6 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         hasTransitionSurface ? 'trans:1' : 'trans:0',
         hasNewAssistantReply ? 'new:1' : 'new:0',
         hasImageFallback ? 'imgfb:1' : 'imgfb:0',
-        hasReplyAction ? 'act:1' : 'act:0',
         `txt:${textLength}`
       ].join('|');
 
@@ -787,7 +787,6 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
           readyNow,
           hasTransitionSurface,
           hasImageFallback,
-          hasReplyAction,
           textLength,
           becameReadyOnSameTurn,
           canUseSameTurnFallback
@@ -800,7 +799,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         return;
       }
 
-      if (!stopBtn && (hasNewAssistantReply || becameReadyOnSameTurn) && hasActualImageOutput && hasReplyAction && Date.now() - startTime > 1000) {
+      if (!stopBtn && (hasNewAssistantReply || becameReadyOnSameTurn) && hasActualImageOutput && Date.now() - startTime > 1000) {
         console.log('✅ [生图分支] 检测到图片回复完成');
         finish(true);
         return;
