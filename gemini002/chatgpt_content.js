@@ -238,6 +238,17 @@ function getLatestAssistantTurnSection() {
   return turns.length > 0 ? turns[turns.length - 1] : null;
 }
 
+function getLatestAssistantTurnSectionMatching(predicate) {
+  const turns = getAssistantTurnSections();
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    try {
+      if (predicate(turn)) return turn;
+    } catch (err) {}
+  }
+  return null;
+}
+
 function isImageGeneratingTurn(turnSection) {
   if (!turnSection) return false;
   return !!(
@@ -272,6 +283,10 @@ function normalizeAssistantText(text) {
     '复制回复',
     '更多操作'
   ]);
+
+  if (/^Thought for\b/i.test(normalized)) return '';
+  if (/^已思考\b/i.test(normalized)) return '';
+  if (/^思考了\b/i.test(normalized)) return '';
 
   return meaninglessTexts.has(normalized) ? '' : normalized;
 }
@@ -336,6 +351,21 @@ function getLastAssistantHtmlContent() {
   if (!markdownNode) return '';
 
   return markdownNode.innerHTML || '';
+}
+
+function isImageCandidateTurn(turnSection) {
+  if (!turnSection) return false;
+  return !!(
+    isImageGeneratingTurn(turnSection) ||
+    isImageReadyTurn(turnSection) ||
+    hasImageTransitionSurface(turnSection) ||
+    getImageCandidatesFromTurn(turnSection).length > 0 ||
+    turnSection.querySelector('img[alt*="已生成图片"], img[alt*="Generated image"]')
+  );
+}
+
+function getLatestImageAssistantTurnSection() {
+  return getLatestAssistantTurnSectionMatching((turn) => isImageCandidateTurn(turn));
 }
 
 function hasImageInAssistantMessage(node) {
@@ -601,7 +631,7 @@ async function getLatestReplyImages() {
   await sleep(1000);
   console.log('🖼️ 开始提取生图结果并转 base64...');
 
-  const latestTurn = getLatestAssistantTurnSection();
+  const latestTurn = getLatestImageAssistantTurnSection() || getLatestAssistantTurnSection();
   if (!latestTurn) {
     return { status: 'error', data: '未找到 assistant 回复区块' };
   }
@@ -730,7 +760,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
   return new Promise((resolve) => {
     console.log('⏳ [生图分支] 开始等待图片回复完成...');
     imageReplyFailureText = '';
-    const initialTurn = getLatestAssistantTurnSection();
+    const initialTurn = getLatestImageAssistantTurnSection() || getLatestAssistantTurnSection();
     const initialTurnIdentity = getTurnIdentity(initialTurn);
     const initialTurnWasReady = isImageReadyTurn(initialTurn);
     const initialTurnWasGenerating = isImageGeneratingTurn(initialTurn);
@@ -753,17 +783,20 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
 
     const check = () => {
       const stopBtn = getStopButton();
-      const latestTurn = getLatestAssistantTurnSection();
+      const latestAssistantTurn = getLatestAssistantTurnSection();
+      const latestTurn = getLatestImageAssistantTurnSection() || latestAssistantTurn;
+      const latestAssistantTurnIdentity = getTurnIdentity(latestAssistantTurn);
       const latestTurnIdentity = getTurnIdentity(latestTurn);
-      const hasNewAssistantReply = !!latestTurnIdentity && latestTurnIdentity !== initialTurnIdentity;
+      const hasNewAssistantReply = !!latestAssistantTurnIdentity && latestAssistantTurnIdentity !== initialTurnIdentity;
+      const hasNewImageReply = !!latestTurnIdentity && latestTurnIdentity !== initialTurnIdentity;
       const readyNow = isImageReadyTurn(latestTurn);
       const loadingNow = isImageGeneratingTurn(latestTurn);
       const hasTransitionSurface = hasImageTransitionSurface(latestTurn);
       const becameReadyOnSameTurn = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && !initialTurnWasReady && readyNow;
-      const latest = getLatestAssistantMessage();
-      const hasImageFallback = hasImageInAssistantMessage(latest) || !!(latestTurn && latestTurn.querySelector('img'));
+      const hasImageFallback = !!(latestTurn && (hasImageInAssistantMessage(latestTurn) || latestTurn.querySelector('img')));
       const hasActualImageOutput = readyNow || hasImageFallback;
-      const textLength = getLastAssistantTextContent().length;
+      const latestAssistantText = getMeaningfulAssistantTextFromTurn(latestAssistantTurn);
+      const textLength = latestAssistantText.length;
       const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0;
       const canUseSameTurnFallback = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && initialTurnWasGenerating && !loadingNow;
 
@@ -773,6 +806,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         readyNow ? 'ready:1' : 'ready:0',
         hasTransitionSurface ? 'trans:1' : 'trans:0',
         hasNewAssistantReply ? 'new:1' : 'new:0',
+        hasNewImageReply ? 'imgnew:1' : 'imgnew:0',
         hasImageFallback ? 'imgfb:1' : 'imgfb:0',
         `txt:${textLength}`
       ].join('|');
@@ -781,8 +815,10 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         lastStateKey = stateKey;
         console.log('🧭 [生图分支] 状态变化:', {
           elapsed: Date.now() - startTime,
+          latestAssistantTurnIdentity,
           latestTurnIdentity,
           hasNewAssistantReply,
+          hasNewImageReply,
           loadingNow,
           readyNow,
           hasTransitionSurface,
@@ -799,7 +835,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         return;
       }
 
-      if (!stopBtn && (hasNewAssistantReply || becameReadyOnSameTurn) && hasActualImageOutput && Date.now() - startTime > 1000) {
+      if (!stopBtn && (hasNewImageReply || becameReadyOnSameTurn) && hasActualImageOutput && Date.now() - startTime > 1000) {
         console.log('✅ [生图分支] 检测到图片回复完成');
         finish(true);
         return;
@@ -813,7 +849,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         }
 
         if (textStableStartAt > 0 && Date.now() - textStableStartAt >= textStableDelayMs) {
-          imageReplyFailureText = getLastAssistantTextContent() || '生图失败：返回了文本错误信息';
+          imageReplyFailureText = latestAssistantText || '生图失败：返回了文本错误信息';
           console.warn(`❌ [生图分支] 图片未产出，判定失败（稳定 ${textStableDelayMs}ms）`);
           finish(false);
         }
@@ -829,8 +865,9 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
     const pollTimer = setInterval(() => check(), 1000);
 
     const timer = setTimeout(() => {
-      const finalText = getLastAssistantTextContent();
-      const latestTurn = getLatestAssistantTurnSection();
+      const latestAssistantTurn = getLatestAssistantTurnSection();
+      const finalText = getMeaningfulAssistantTextFromTurn(latestAssistantTurn);
+      const latestTurn = getLatestImageAssistantTurnSection() || latestAssistantTurn;
       const hasTransitionSurface = hasImageTransitionSurface(latestTurn);
       if (finalText && !hasTransitionSurface && !imageReplyFailureText) {
         imageReplyFailureText = finalText;
