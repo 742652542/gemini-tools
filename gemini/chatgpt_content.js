@@ -904,12 +904,12 @@ async function pasteTextToPrompt(text) {
     cancelable: true,
     clipboardData: dt
   });
-
-  const pasted = inputBox.dispatchEvent(pasteEvent);
-  if (!pasted) {
-    console.warn('⚠️ 文本粘贴事件被拦截，准备走输入兜底');
-    await setPromptText(text);
-  }
+  await setPromptText(text);
+  // const pasted = inputBox.dispatchEvent(pasteEvent);
+  // if (!pasted) {
+  //   console.warn('⚠️ 文本粘贴事件被拦截，准备走输入兜底');
+  // await setPromptText(text);
+  // }
 }
 
 async function setPromptText(text) {
