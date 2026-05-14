@@ -40,68 +40,108 @@ function waitForUploadSuccess(timeoutMs = 600000) {
 
 
 /**
+ * 通用判断视频生成状态：不依赖具体错误文案。
+ * 成功以视频产物为准；页面已空闲且只有最终文本回复时，视为未产出视频。
+ */
+function inspectVideoState(startTime) {
+    const responseBlocks = document.querySelectorAll('message-content');
+    if (responseBlocks.length === 0) return { status: 'pending' };
+
+    const lastBlock = responseBlocks[responseBlocks.length - 1];
+    const rawText = lastBlock.textContent || "";
+    const textContent = rawText.toLowerCase().trim();
+
+    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
+                        lastBlock.querySelector('button[aria-label="Download video"]');
+    const videoEl = lastBlock.querySelector('video');
+
+    if (downloadBtn || videoEl) {
+        return { status: 'success', data: rawText };
+    }
+
+    const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
+                    document.querySelector('button[aria-label="停止生成"]');
+
+    const isGenerating = stopBtn ||
+        textContent.includes("正在生成视频") ||
+        textContent.includes("generating your video") ||
+        textContent.includes("请稍后回来查看") ||
+        textContent.includes("check back later");
+
+    if (isGenerating) {
+        return { status: 'pending' };
+    }
+
+    const sendBtn = document.querySelector('button[aria-label="Send"]') ||
+                    document.querySelector('button[aria-label="发送"]');
+
+    const hasFinalText = rawText.trim().length > 0;
+    const enoughTimePassed = Date.now() - startTime > 3000;
+
+    if (hasFinalText && sendBtn && enoughTimePassed) {
+        return { status: 'error', data: rawText };
+    }
+
+    return { status: 'pending' };
+}
+
+/**
  * 专门用于等待视频生成完成的函数
  * 因为视频生成需要 5-10 分钟，不能用简单的"停止生成"按钮判定
  */
 function waitForVideoReady(timeoutMs = 900000) { // 默认 15 分钟
     return new Promise((resolve) => {
         console.log(`⏳ [3/5] 开始持续监控视频生成状态 (最长等待 ${timeoutMs/60000} 分钟)...`);
-        
+
         const startTime = Date.now();
+        let settled = false;
         let lastLoggedStatus = "";
-        
-        const observer = new MutationObserver(() => {
-            const timeElapsed = Date.now() - startTime;
-            
-            // 查找最新的回复区块
-            const responseBlocks = document.querySelectorAll('message-content');
-            if (responseBlocks.length === 0) return;
-            const lastBlock = responseBlocks[responseBlocks.length - 1];
-            
-            const textContent = lastBlock.textContent ? lastBlock.textContent.toLowerCase() : "";
-            
-            // 判定 1：生成失败 (Error)
-            if (textContent.includes("无法生成该视频") || textContent.includes("can't generate that video") || textContent.includes("生成视频时出错") || textContent.includes("error generating video")) {
-                console.warn(`❌ 视频生成失败: ${textContent.substring(0, 100)}...`);
-                observer.disconnect();
-                clearTimeout(timer);
-                resolve({ status: 'error', data: lastBlock.textContent }); // 返回原始文本
-                return;
-            }
 
-            // 判定 2：明确的成功提示 (Success)
-            const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
-                                lastBlock.querySelector('button[aria-label="Download video"]');
-                                
-            if (textContent.includes("您的视频已准备就绪") || textContent.includes("your video is ready!") || downloadBtn) {
-            // if (downloadBtn) {
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            observer.disconnect();
+            clearTimeout(timer);
+            clearInterval(interval);
+            resolve(result);
+        };
+
+        const check = () => {
+            const result = inspectVideoState(startTime);
+
+            if (result.status === 'success') {
                 console.log("✅ 视频生成完毕！");
-
-                observer.disconnect();
-                clearTimeout(timer);
-                resolve({ status: 'success', data: lastBlock.textContent });
+                finish(result);
                 return;
             }
-            
-            // 判定 3：正在生成 (Waiting)
-            if (textContent.includes("正在生成视频") || textContent.includes("generating your video") || textContent.includes("请稍后回来查看") || textContent.includes("check back later")) {
-                if (lastLoggedStatus !== "generating") {
-                    console.log("🔄 正在努力生成视频中，请耐心等待...");
-                    lastLoggedStatus = "generating";
-                }
-                return; // 继续等待
+
+            if (result.status === 'error') {
+                console.warn(`❌ 视频生成未产出视频: ${(result.data || "").substring(0, 100)}...`);
+                finish(result);
+                return;
             }
-        });
+
+            if (lastLoggedStatus !== "pending") {
+                console.log("🔄 视频任务仍在等待或生成中...");
+                lastLoggedStatus = "pending";
+            }
+        };
+
+        const observer = new MutationObserver(check);
 
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
+        const interval = setInterval(check, 1000);
+
         const timer = setTimeout(() => {
-            observer.disconnect();
             console.error(`⚠️ 视频监控超时 (${timeoutMs/60000}分钟)`);
-            resolve({ status: 'timeout', data: '等待超时' });
+            finish({ status: 'timeout', data: '等待超时' });
         }, timeoutMs);
+
+        check();
     });
 }
+
 /**
  * 等待回答生成完成 (监听 DOM 按钮 - 适用于文本和图片)
  */
@@ -982,8 +1022,6 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
 async function typeAndSendTest() {
 
-    console.log("📝 开启新对话");
-    
     await new Promise(r => setTimeout(r, 500)); // UI 缓冲
 
     const sendBtn = document.querySelector('button[aria-label*="New chat"]') || 
@@ -991,7 +1029,7 @@ async function typeAndSendTest() {
     
     if (sendBtn) {
         sendBtn.click();
-        const theAction = "generate_image"; // 或者修改为您想要的默认测试动作
+        const theAction = "generate_video"; // 或者修改为您想要的默认测试动作
         const theModel = "Pro";
         
         console.log(`🚀 开启新对话已点击 [测试动作: ${theAction}, 测试模型: ${theModel}]`);
