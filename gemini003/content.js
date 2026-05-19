@@ -464,8 +464,27 @@ async function downloadImage(task_id) {
         const cloneBlock = lastBlock.cloneNode(true);
         const cloneImages = cloneBlock.querySelectorAll('img');
 
-        // 查找下载按钮 (Gemini 的下载按钮通常有这个 data-test-id)
-        const sendBtn = lastBlock.querySelector('button[data-test-id="download-generated-image-button"]');
+        // 查找下载按钮，兼容旧版 button 和新版 gem-icon-button 包裹结构
+        const downloadSelectors = [
+            'button[data-test-id="download-generated-image-button"]',
+            'gem-icon-button[data-test-id="download-generated-image-button"] button',
+            'gem-icon-button[data-test-id="download-generated-image-button"]',
+            'download-generated-image-button button[aria-label="下载完整尺寸的图片"]',
+            'download-generated-image-button button[aria-label="Download full size image"]',
+            'button[aria-label="下载完整尺寸的图片"]',
+            'button[aria-label="Download full size image"]'
+        ];
+
+        let sendBtn = null;
+        for (const selector of downloadSelectors) {
+            const candidate = lastBlock.querySelector(selector);
+            if (candidate) {
+                sendBtn = candidate.tagName === 'GEM-ICON-BUTTON'
+                    ? (candidate.querySelector('button') || candidate)
+                    : candidate;
+                break;
+            }
+        }
     
         if (sendBtn) {
             console.log("🖱️ 找到下载按钮，准备点击...");
@@ -687,9 +706,28 @@ async function selectGeminiGenerationTool(action, options = {}) {
         return;
     }
 
-    let toolboxBtn = document.querySelector(".toolbox-drawer-button");
-    if (!toolboxBtn) {
-        toolboxBtn = document.querySelector('button[aria-label="打开输入区域菜单，以选择工具和上传内容类型"]');
+    const toolboxSelectors = [
+        ".toolbox-drawer-button",
+        'button[aria-label="打开输入区域菜单，以选择工具和上传内容类型"]',
+        'button[aria-label="上传和工具"]',
+        'button[aria-label="Upload and tools"]',
+        'gem-icon-button[arialabel="上传和工具"] button',
+        'gem-icon-button[arialabel="Upload and tools"] button',
+        'gem-icon-button[arialabel="上传和工具"]',
+        'gem-icon-button[arialabel="Upload and tools"]',
+        'gem-icon-button.menu-button button',
+        'gem-icon-button.menu-button'
+    ];
+
+    let toolboxBtn = null;
+    for (const selector of toolboxSelectors) {
+        const candidate = document.querySelector(selector);
+        if (candidate) {
+            toolboxBtn = candidate.tagName === 'GEM-ICON-BUTTON'
+                ? (candidate.querySelector('button') || candidate)
+                : candidate;
+            break;
+        }
     }
 
     if (!toolboxBtn) {
