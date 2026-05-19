@@ -9,6 +9,16 @@ let socket = null;
 let heartbeatInterval = null;
 let reconnectTimer = null;
 let isConnecting = false;
+let preloadTabId = null;
+let preloadState = "idle";
+let preloadModel = null;
+let preloadRestoreTimer = null;
+let preloadLoadListener = null;
+let preloadPrepareTimer = null;
+let preloadAttemptId = 0;
+let preloadPrepareStarted = false;
+const PRELOAD_MODEL = "Pro";
+const PRELOAD_PREPARE_TIMEOUT = 20000;
 
 // --- 核心：任务生命周期注册表 ---
 // Key: task_id (String)
@@ -30,6 +40,156 @@ const pendingRequests = new Map();
 // 用于标记当前正在尝试发起下载的任务
 let currentPendingDownloadTask = null;
 
+function isGeminiImageTask(task) {
+    return task && task.action === "generate_image" && (task.source || "gemini") !== "chatgpt";
+}
+
+function clearPreloadRuntime() {
+    if (preloadLoadListener) {
+        chrome.tabs.onUpdated.removeListener(preloadLoadListener);
+        preloadLoadListener = null;
+    }
+    if (preloadPrepareTimer) {
+        clearTimeout(preloadPrepareTimer);
+        preloadPrepareTimer = null;
+    }
+    if (preloadRestoreTimer) {
+        clearTimeout(preloadRestoreTimer);
+        preloadRestoreTimer = null;
+    }
+}
+
+function clearPreloadState() {
+    clearPreloadRuntime();
+    preloadTabId = null;
+    preloadState = "idle";
+    preloadModel = null;
+    preloadPrepareStarted = false;
+}
+
+function detachPreloadTab(nextState = "idle") {
+    const tabId = preloadTabId;
+    clearPreloadRuntime();
+    preloadTabId = null;
+    preloadModel = null;
+    preloadState = nextState;
+    preloadPrepareStarted = false;
+    return tabId;
+}
+
+function isManagedPreloadTab(tabId) {
+    return !!tabId && preloadTabId === tabId && (preloadState === "preparing" || preloadState === "ready");
+}
+
+function clearPreloadTab() {
+    const tabId = preloadTabId;
+    clearPreloadState();
+    if (tabId) {
+        chrome.tabs.remove(tabId, () => {
+            if (chrome.runtime.lastError) {}
+        });
+    }
+}
+
+function schedulePreloadRestore(delay = 500) {
+    if (preloadRestoreTimer) {
+        clearTimeout(preloadRestoreTimer);
+    }
+    preloadRestoreTimer = setTimeout(() => {
+        preloadRestoreTimer = null;
+        ensurePreloadTab();
+    }, delay);
+}
+
+function canReusePreloadForTask(task) {
+    return isGeminiImageTask(task) && preloadState === "ready" && preloadModel === PRELOAD_MODEL && !!preloadTabId;
+}
+
+function startPreloadPrepare(attemptId, attemptTabId, loadListener) {
+    if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing" || preloadPrepareStarted) return;
+    preloadPrepareStarted = true;
+
+    if (loadListener) {
+        chrome.tabs.onUpdated.removeListener(loadListener);
+        if (preloadLoadListener === loadListener) {
+            preloadLoadListener = null;
+        }
+    }
+
+    setTimeout(() => {
+        if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing") return;
+        chrome.tabs.sendMessage(attemptTabId, { action: "prepare_gemini_image_preload" }).then((response) => {
+            if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing") return;
+            if (response && response.success === true) {
+                preloadState = "ready";
+                preloadModel = PRELOAD_MODEL;
+                if (preloadPrepareTimer) {
+                    clearTimeout(preloadPrepareTimer);
+                    preloadPrepareTimer = null;
+                }
+                console.log(`✅ [Preload] Gemini 预加载页已就绪: ${attemptTabId}`);
+                return;
+            }
+
+            throw new Error("Preload content script did not confirm success");
+        }).catch((err) => {
+            if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId) return;
+            console.error("❌ [Preload] 预加载初始化失败:", err);
+            clearPreloadTab();
+            schedulePreloadRestore(3000);
+        });
+    }, 3000);
+}
+
+function ensurePreloadTab() {
+    if (preloadState === "preparing" || preloadState === "ready") return;
+
+    const attemptId = ++preloadAttemptId;
+    preloadState = "preparing";
+    preloadPrepareStarted = false;
+    chrome.tabs.create({ url: "https://gemini.google.com/app", active: true }, (newTab) => {
+        if (preloadAttemptId !== attemptId) {
+            if (newTab && newTab.id) {
+                chrome.tabs.remove(newTab.id, () => {
+                    if (chrome.runtime.lastError) {}
+                });
+            }
+            return;
+        }
+
+        if (chrome.runtime.lastError || !newTab || !newTab.id) {
+            console.error("❌ [Preload] 预加载页创建失败", chrome.runtime.lastError);
+            clearPreloadState();
+            schedulePreloadRestore(3000);
+            return;
+        }
+
+        const attemptTabId = newTab.id;
+        preloadTabId = attemptTabId;
+        preloadPrepareTimer = setTimeout(() => {
+            if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing") return;
+            console.error(`❌ [Preload] 预加载准备超时: ${attemptTabId}`);
+            clearPreloadTab();
+            schedulePreloadRestore(3000);
+        }, PRELOAD_PREPARE_TIMEOUT);
+
+        const loadListener = (updatedTabId, changeInfo) => {
+            if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || updatedTabId !== attemptTabId || changeInfo.status !== "complete") return;
+            startPreloadPrepare(attemptId, attemptTabId, loadListener);
+        };
+
+        preloadLoadListener = loadListener;
+        chrome.tabs.onUpdated.addListener(loadListener);
+
+        chrome.tabs.get(attemptTabId, (tab) => {
+            if (chrome.runtime.lastError || !tab || tab.id !== attemptTabId) return;
+            if (tab.status === "complete") {
+                startPreloadPrepare(attemptId, attemptTabId, loadListener);
+            }
+        });
+    });
+}
+
 
 // ==========================================
 // 1. WebSocket 模块 (保持原样)
@@ -47,6 +207,7 @@ function connectWebSocket() {
         isConnecting = false;
         socket.send(JSON.stringify({ type: "login", msg: "I am ready" }));
         startHeartbeat();
+        schedulePreloadRestore(500);
     };
 
     socket.onmessage = async (event) => {
@@ -117,80 +278,144 @@ async function handleGenerateTask(task) {
     const taskId = task.task_id;
     const taskSource = task.source === "chatgpt" ? "chatgpt" : "gemini";
     const targetUrl = taskSource === "chatgpt" ? "https://chatgpt.com/" : "https://gemini.google.com/app";
-    console.log(`🚀 [Task: ${taskId}] 收到新任务，准备创建独立 Tab...`);
+    console.log(`🚀 [Task: ${taskId}] 收到新任务，准备分发到任务页...`);
     console.log(`🧭 [Task: ${taskId}] 来源: ${taskSource}, 目标页面: ${targetUrl}`);
 
-    // 1. 创建新 Tab
+    if (canReusePreloadForTask(task)) {
+        const preloadTaskTabId = detachPreloadTab("in_use");
+        if (preloadTaskTabId) {
+            console.log(`♻️ [Task: ${taskId}] 复用预加载 Tab: ${preloadTaskTabId}`);
+            registerTaskTabAndDispatch(task, preloadTaskTabId, false, true);
+            return;
+        }
+    }
+
+    if (preloadTabId) {
+        console.log(`🧹 [Task: ${taskId}] 当前任务不复用预加载页，先关闭预加载 Tab`);
+        clearPreloadTab();
+    }
+
+    openTaskTabAndDispatch(task, targetUrl);
+}
+
+function openTaskTabAndDispatch(task, targetUrl) {
+    const taskId = task.task_id;
+
     chrome.tabs.create({ url: targetUrl, active: true }, (newTab) => {
         if (!newTab || !newTab.id) {
             sendToPython({ status: "error", task_id: taskId, error: "Tab 创建失败" });
+            schedulePreloadRestore();
             return;
         }
 
         const tabId = newTab.id;
         console.log(`📌 [Task: ${taskId}] 绑定 Tab ID: ${tabId}`);
+        registerTaskTabAndDispatch(task, tabId, true, false);
+    });
+}
 
-        // 2. 注册任务状态
-        // 针对视频生成设置 15 分钟超时，其他默认 5 分钟
-        const timeoutDuration = task.action === "generate_video" ? 900000 : 360000;
-        const timeoutId = setTimeout(() => {
-            if (taskRegistry.has(taskId)) { // Check if task is still running
-                console.error(`⏰ [Task: ${taskId}] 任务执行超时 (${timeoutDuration/60000}分钟)，强制关闭!`);
-                const payload = { status: "error", task_id: taskId, action: task.action, data: "", error: "Content script 执行超时" };
+function clearTaskRuntime(taskId) {
+    const taskData = taskRegistry.get(taskId);
+    if (!taskData) return null;
+
+    if (taskData.download_timer) {
+        clearTimeout(taskData.download_timer);
+    }
+
+    if (taskData.timeout_id) {
+        clearTimeout(taskData.timeout_id);
+    }
+
+    taskRegistry.delete(taskId);
+    return taskData;
+}
+
+function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadReuse = false) {
+    const taskId = task.task_id;
+    const taskSource = task.source === "chatgpt" ? "chatgpt" : "gemini";
+    const timeoutDuration = task.action === "generate_video" ? 900000 : 360000;
+    const timeoutId = setTimeout(() => {
+        if (taskRegistry.has(taskId)) {
+            console.error(`⏰ [Task: ${taskId}] 任务执行超时 (${timeoutDuration/60000}分钟)，强制关闭!`);
+            const payload = { status: "error", task_id: taskId, action: task.action, data: "", error: "Content script 执行超时" };
+            sendToPython(payload);
+            closeTabAndCleanup(taskId);
+        }
+    }, timeoutDuration);
+
+    taskRegistry.set(taskId, {
+        tab_id: tabId,
+        task_action: task.action,
+        task_source: taskSource,
+        download_timer: null,
+        is_waiting_download: true,
+        timeout_id: timeoutId
+    });
+
+    const dispatchToTab = () => {
+        console.log(`✅ [Task: ${taskId}] Tab 已就绪，发送执行指令...`);
+        setTimeout(() => {
+            chrome.tabs.sendMessage(tabId, {
+                action: "type_and_send",
+                is_continue: task.is_continue,
+                text: task.prompt,
+                image: task.image,
+                task_id: taskId,
+                task_action: task.action,
+                task_model: task.model,
+                source: taskSource,
+                use_preloaded_tab: isPreloadReuse
+            }).catch(err => {
+                if (!taskRegistry.has(taskId)) {
+                    console.log(`ℹ️ [Task: ${taskId}] Content script 响应通道已关闭，但任务已结束，忽略通信失败误报`);
+                    return;
+                }
+
+                console.error(`❌ [Task: ${taskId}] 发送指令失败:`, err);
+
+                if (isPreloadReuse) {
+                    console.warn(`↩️ [Task: ${taskId}] 预加载复用失败，降级为新开页重试`);
+                    clearTaskRuntime(taskId);
+                    chrome.tabs.remove(tabId, () => {
+                        if (chrome.runtime.lastError) {}
+                        openTaskTabAndDispatch(task, "https://gemini.google.com/app");
+                    });
+                    return;
+                }
+
+                const payload = {
+                    status: "error",
+                    task_id: taskId,
+                    action: task.action,
+                    data: "",
+                    error: "Content script 通信失败"
+                };
                 sendToPython(payload);
                 closeTabAndCleanup(taskId);
-            }
-        }, timeoutDuration);
+            });
+        }, waitForLoad ? 3000 : 0);
+    };
 
-        taskRegistry.set(taskId, {
-            tab_id: tabId,
-            task_action: task.action, // 保存 action 到注册表中
-            task_source: taskSource,
-            download_timer: null,
-            is_waiting_download: true,
-            timeout_id: timeoutId
-        });
+    if (!waitForLoad) {
+        dispatchToTab();
+        return;
+    }
 
-        // 3. 监听 Tab 加载完成
-        const listener = (updatedTabId, changeInfo, tab) => {
-            if (updatedTabId === tabId && changeInfo.status === 'complete') {
-                chrome.tabs.onUpdated.removeListener(listener);
-                
-                console.log(`✅ [Task: ${taskId}] Tab 加载完毕，发送执行指令...`);
-                
-                // 4. 发送指令给 Content Script
-                setTimeout(() => {
-                    chrome.tabs.sendMessage(tabId, {
-                        action: "type_and_send",
-                        is_continue: task.is_continue,
-                        text: task.prompt,
-                        image: task.image,
-                        task_id: taskId,
-                        task_action: task.action,  // 透传 action
-                        task_model: task.model,    // 透传 model
-                        source: taskSource
-                    }).catch(err => {
-                        if (!taskRegistry.has(taskId)) {
-                            console.log(`ℹ️ [Task: ${taskId}] Content script 响应通道已关闭，但任务已结束，忽略通信失败误报`);
-                            return;
-                        }
-                        console.error(`❌ [Task: ${taskId}] 发送指令失败:`, err);
-                        // --- 修改点 1: 拆分调用 ---
-                        const payload = {
-                            status: "error",
-                            task_id: taskId, 
-                            action: task.action, // 透传 action
-                            data: "", 
-                            error: "Content script 通信失败"
-                        };
-                        sendToPython(payload);
-                        closeTabAndCleanup(taskId);
-                    });
-                }, 3000); 
-            }
-        };
+    const listener = (updatedTabId, changeInfo) => {
+        if (updatedTabId === tabId && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+            dispatchToTab();
+        }
+    };
 
-        chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.onUpdated.addListener(listener);
+
+    chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError || !tab || tab.id !== tabId) return;
+        if (tab.status === "complete") {
+            chrome.tabs.onUpdated.removeListener(listener);
+            dispatchToTab();
+        }
     });
 }
 
@@ -231,20 +456,10 @@ function sendTaskResult(taskId, status, messageOrData, action, url_id) {
  * 功能拆分 2: 关闭 Tab 和清理资源
  */
 function closeTabAndCleanup(taskId) {
-    const taskData = taskRegistry.get(taskId);
+    const taskData = clearTaskRuntime(taskId);
     if (!taskData) return; 
 
     console.log(`🧹 [Task: ${taskId}] 清理资源并关闭 Tab`);
-
-    // 1. 清理下载定时器
-    if (taskData.download_timer) {
-        clearTimeout(taskData.download_timer);
-    }
-
-    // --- 新增：清理整体任务超时计时器 ---
-    if (taskData.timeout_id) {
-        clearTimeout(taskData.timeout_id);
-    }
 
     // 2. 关闭 Tab
     if (taskData.tab_id) {
@@ -253,8 +468,8 @@ function closeTabAndCleanup(taskId) {
         });
     }
 
-    // 3. 清理内存
-    taskRegistry.delete(taskId);
+    // 3. 恢复预加载页
+    schedulePreloadRestore();
 }
 
 
@@ -395,6 +610,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             chrome.tabs.remove(tabId); // 这里的 remove 是关闭辅助 Tab，不影响主任务
         }
     }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    if (isManagedPreloadTab(tabId)) {
+        clearPreloadState();
+        schedulePreloadRestore(3000);
+    }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (!isManagedPreloadTab(tabId) || preloadState !== "ready") return;
+    if (!changeInfo.url && changeInfo.status !== "loading") return;
+
+    console.warn(`⚠️ [Preload] 预加载页状态失效: ${tabId}`);
+    clearPreloadTab();
+    schedulePreloadRestore(3000);
 });
 
 

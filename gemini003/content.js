@@ -681,6 +681,139 @@ async function sendPrompt(text) {
     }
 }
 
+async function selectGeminiGenerationTool(action, options = {}) {
+    const { strict = false } = options;
+    if (action !== "generate_image" && action !== "generate_video") {
+        return;
+    }
+
+    let toolboxBtn = document.querySelector(".toolbox-drawer-button");
+    if (!toolboxBtn) {
+        toolboxBtn = document.querySelector('button[aria-label="打开输入区域菜单，以选择工具和上传内容类型"]');
+    }
+
+    if (!toolboxBtn) {
+        console.warn("⚠️ 未找到工具箱按钮");
+        if (strict) {
+            throw new Error("未找到工具箱按钮");
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        return;
+    }
+
+    toolboxBtn.click();
+    console.log("🚀 工具箱按钮已点击");
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    const overlayPanes = document.querySelectorAll('.cdk-overlay-pane');
+    const targetBtnText = action === "generate_video" ? "视频" : "图片";
+    let foundTargetBtn = false;
+
+    for (const pane of overlayPanes) {
+        const buttons = pane.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.textContent.includes(targetBtnText)) {
+                btn.click();
+                console.log(`🚀 '${targetBtnText}'按钮已点击`);
+                foundTargetBtn = true;
+                break;
+            }
+        }
+        if (foundTargetBtn) break;
+    }
+
+    if (!foundTargetBtn) {
+        console.warn(`⚠️ 未找到'${targetBtnText}'按钮`);
+        if (strict) {
+            throw new Error(`未找到'${targetBtnText}'按钮`);
+        }
+    }
+
+    await new Promise(r => setTimeout(r, 1000));
+}
+
+async function selectGeminiModel(action, modelName, options = {}) {
+    const { allowFallback = true, strict = false } = options;
+    let modeBtn = document.querySelector('div[aria-label*="打开模式选择器"]');
+    if (!modeBtn) {
+        modeBtn = document.querySelector('button[aria-label*="打开模式选择器"]');
+    }
+
+    if (!modeBtn) {
+        console.warn("⚠️ 未找到模式按钮");
+        if (strict) {
+            throw new Error("未找到模式按钮");
+        }
+        return;
+    }
+
+    modeBtn.click();
+    console.log("🚀 模式选择已点击");
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    const menuContents = document.querySelectorAll('.mat-mdc-menu-content');
+    let foundTargetBtn = false;
+    let quantityLimitReached = false;
+    const targetModel = (modelName && modelName.trim() !== '') ? modelName : "Pro";
+
+    for (const content of menuContents) {
+        const buttons = content.querySelectorAll('button');
+        for (const btn of buttons) {
+            if (btn.textContent && btn.textContent.includes(targetModel)) {
+                const hasLimitText = btn.textContent.includes("用量限额");
+                const hasLimitDiv = btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限");
+
+                if (hasLimitText || hasLimitDiv) {
+                    console.warn(`⚠️ [5/5] ${targetModel} 模式用量限额/数量上限`);
+                    quantityLimitReached = true;
+                    break;
+                } else {
+                    btn.click();
+                    console.log(`🚀 [5/5] 已切换至 ${targetModel} 模式`);
+                    foundTargetBtn = true;
+                    break;
+                }
+            }
+        }
+        if (foundTargetBtn || quantityLimitReached) break;
+    }
+
+    if (action === "generate_video" && !foundTargetBtn) {
+        const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
+        throw new Error(`视频生成模式选择失败: ${reason}`);
+    }
+
+    if (!allowFallback && !foundTargetBtn) {
+        const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
+        throw new Error(`模式选择失败: ${targetModel} (${reason})`);
+    }
+
+    if (!foundTargetBtn && allowFallback && targetModel !== "思考") {
+        console.log("⚠️ 准备降级至 '思考' 模式...");
+        for (const content of menuContents) {
+            const buttons = content.querySelectorAll('button');
+            for (const btn of buttons) {
+                if (btn.textContent && btn.textContent.includes("思考")) {
+                    if (btn.textContent.includes("用量限额") || (btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限"))) {
+                        console.warn("⚠️ [5/5] '思考' 模式用量限额 (全部限额了)");
+                        break;
+                    } else {
+                        btn.click();
+                        console.log("🚀 [5/5] 降级成功，已切换至 '思考' 模式");
+                        foundTargetBtn = true;
+                        break;
+                    }
+                }
+            }
+            if (foundTargetBtn) break;
+        }
+    }
+
+    if (!foundTargetBtn) console.warn("⚠️ [5/5] 模式切换失败: 未找到任何可用模型");
+}
+
 async function createNewChat(action, modelName) {
     console.log(`📝 开启新对话 (动作: ${action}, 模型: ${modelName || '默认 Pro'})`);
     
@@ -693,133 +826,26 @@ async function createNewChat(action, modelName) {
         sendBtn.click();
         console.log("🚀 开启新对话已点击");
 
-        // 查找class中有"toolbox-drawer-button"的元素进行点击
         await new Promise(r => setTimeout(r, 1000));
+        await selectGeminiGenerationTool(action);
+        await selectGeminiModel(action, modelName);
         
-        // 只有 generate_image 和 generate_video 才去点击左下角的菜单
-        if (action === "generate_image" || action === "generate_video") {
-            let toolboxBtn = document.querySelector(".toolbox-drawer-button");  
-            if (!toolboxBtn) {
-               toolboxBtn = document.querySelector('button[aria-label="打开输入区域菜单，以选择工具和上传内容类型"]');
-            }
-            if (toolboxBtn) {
-                toolboxBtn.click();
-                console.log("🚀 工具箱按钮已点击");
-                 // 查找class中有"cdk-overlay-pane"的div 中 button 的文本进行点击
-                await new Promise(r => setTimeout(r, 1000));
-                const overlayPanes = document.querySelectorAll('.cdk-overlay-pane');
-                let foundImageBtn = false;
-                
-                // 动态设定需要查找的按钮文本
-                const targetBtnText = action === "generate_video" ? "视频" : "图片";
-                
-                for (const pane of overlayPanes) {
-                    const buttons = pane.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        if (btn.textContent.includes(targetBtnText)) {
-                            btn.click();
-                            console.log(`🚀 '${targetBtnText}'按钮已点击`);
-                            foundImageBtn = true;
-                            break;
-                        }
-                    }
-                    if (foundImageBtn) break;
-                }
-                if (!foundImageBtn) console.warn(`⚠️ 未找到'${targetBtnText}'按钮`);
-                
-            } else {
-                console.warn("⚠️ 未找到工具箱按钮");
-            }
-            await new Promise(r => setTimeout(r, 1000));
-        }
-
-        // 切换模式逻辑 (通用)
-        let modeBtn = document.querySelector('div[aria-label*="打开模式选择器"]') 
-        if (!modeBtn) {
-            modeBtn = document.querySelector('button[aria-label*="打开模式选择器"]') 
-        }
-
-        if (modeBtn) {
-            modeBtn.click();
-            console.log("🚀 模式选择已点击");
-
-            await new Promise(r => setTimeout(r, 1000));
-            
-            const menuContents = document.querySelectorAll('.mat-mdc-menu-content');
-            let foundTargetBtn = false;
-            let quantityLimitReached = false;
-            
-            // 如果服务端没传模型名字，或者传的是错的，默认尝试 Pro
-            const targetModel = (modelName && modelName.trim() !== '') ? modelName : "Pro";
-
-            // 1. 尝试寻找目标模型
-            for (const content of menuContents) {
-                const buttons = content.querySelectorAll('button');
-                for (const btn of buttons) {
-                    if (btn.textContent && btn.textContent.includes(targetModel)) {
-                        // 检查用量限额
-                        const hasLimitText = btn.textContent.includes("用量限额");
-                        const hasLimitDiv = btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限");
-                        
-                        if(hasLimitText || hasLimitDiv) {
-                            console.warn(`⚠️ [5/5] ${targetModel} 模式用量限额/数量上限`);
-                            quantityLimitReached = true;
-                            break; // 触发外层降级逻辑
-                        } else {
-                            btn.click();
-                            console.log(`🚀 [5/5] 已切换至 ${targetModel} 模式`);
-                            foundTargetBtn = true;
-                            break;
-                        }
-                    }
-                }
-                if (foundTargetBtn || quantityLimitReached) break;
-            }
-
-            // 特殊处理：如果是 generate_video，且遇到限额或者找不到模型，直接抛出错误，不降级
-            if (action === "generate_video" && !foundTargetBtn) {
-                const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
-                throw new Error(`视频生成模式选择失败: ${reason}`);
-            }
-
-            // 2. 降级逻辑：(仅非视频模式，或视频模式未配置上述阻断时，其实上一步已经抛出错误了)
-            // 如果没有找到目标模型（或者限额了），尝试寻找“思考”
-            if (!foundTargetBtn && targetModel !== "思考") {
-                console.log("⚠️ 准备降级至 '思考' 模式...");
-                for (const content of menuContents) {
-                    const buttons = content.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        if (btn.textContent && btn.textContent.includes("思考")) {
-                            if(btn.textContent.includes("用量限额") || (btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限"))){
-                                console.warn("⚠️ [5/5] '思考' 模式用量限额 (全部限额了)");
-                                break;
-                            } else {
-                                btn.click();
-                                console.log("🚀 [5/5] 降级成功，已切换至 '思考' 模式");
-                                foundTargetBtn = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (foundTargetBtn) break;
-                }
-            }
-
-            if (!foundTargetBtn) console.warn(`⚠️ [5/5] 模式切换失败: 未找到任何可用模型`);
-        } else {
-            console.warn("⚠️ 未找到模式按钮");
-        }
-       
     } else {
         throw new Error("找不到开启新对话");
     }
+}
+
+async function prepareGeminiImagePreload(modelName = "Pro") {
+    console.log(`🖼️ 预加载 Gemini 图片模式 (模型: ${modelName || 'Pro'})`);
+    await selectGeminiGenerationTool("generate_image", { strict: true });
+    await selectGeminiModel("generate_image", modelName, { allowFallback: false, strict: true });
 }
 
 // ==========================================
 // 5. 流程编排 (测试入口)
 // ==========================================
 
-async function typeAndSend(text = "根据图片，生成一张有年代感的图片", task_id = 0, image=[], is_continue = false, action = "generate_image", model = "Pro") {
+async function typeAndSend(text = "根据图片，生成一张有年代感的图片", task_id = 0, image=[], is_continue = false, action = "generate_image", model = "Pro", usePreloadedTab = false) {
     const log = document.getElementById('status-log');
     if(log) log.innerText = `🚀 任务启动: ${task_id} (${action})`;
     let urlId = null;
@@ -828,10 +854,16 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         // 1. 完整流程 (解开注释)
         // ==========================================
         // Step 1: 开启上传监听 (确保你注入了 injected.js 并能触发事件)
-        console.log(`1/5 创建新聊天窗口... [Action: ${action}, Model: ${model}]`);
-        if(log) log.innerText = "1/5 创建新聊天窗口...";
-        await createNewChat(action, model);
-        await new Promise(r => setTimeout(r, 2000));
+        if (usePreloadedTab) {
+            console.log(`1/5 复用预加载页面... [Action: ${action}, Model: ${model}]`);
+            if(log) log.innerText = "1/5 复用预加载页面...";
+            await new Promise(r => setTimeout(r, 1000));
+        } else {
+            console.log(`1/5 创建新聊天窗口... [Action: ${action}, Model: ${model}]`);
+            if(log) log.innerText = "1/5 创建新聊天窗口...";
+            await createNewChat(action, model);
+            await new Promise(r => setTimeout(r, 2000));
+        }
         
         // if(!is_continue) {
         //     console.log("1/5 创建新聊天窗口...");
@@ -1021,147 +1053,37 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 }
 
 async function typeAndSendTest() {
-
-    await new Promise(r => setTimeout(r, 500)); // UI 缓冲
-
-    const sendBtn = document.querySelector('button[aria-label*="New chat"]') || 
-                    document.querySelector('button[aria-label*="发起新对话"]') ||   document.querySelector('a[aria-label*="发起新对话"]');
-    
-    if (sendBtn) {
-        sendBtn.click();
-        const theAction = "generate_video"; // 或者修改为您想要的默认测试动作
-        const theModel = "Pro";
-        
-        console.log(`🚀 开启新对话已点击 [测试动作: ${theAction}, 测试模型: ${theModel}]`);
-
-        // 查找class中有"toolbox-drawer-button"的元素进行点击
-        await new Promise(r => setTimeout(r, 1000));
-        
-        if (theAction === "generate_image" || theAction === "generate_video") {
-             let toolboxBtn = document.querySelector(".toolbox-drawer-button");  
-            if (!toolboxBtn) {
-               toolboxBtn = document.querySelector('button[aria-label="打开输入区域菜单，以选择工具和上传内容类型"]');
-            }
-            if (toolboxBtn) {
-                toolboxBtn.click();
-                console.log("🚀 工具箱按钮已点击");
-                 // 查找class中有"cdk-overlay-pane"的div 中 button 的文本进行点击
-                await new Promise(r => setTimeout(r, 1000));
-                const overlayPanes = document.querySelectorAll('.cdk-overlay-pane');
-                let foundImageBtn = false;
-                
-                // 动态设定需要查找的按钮文本
-                const targetBtnText = theAction === "generate_video" ? "视频" : "图片";
-                
-                for (const pane of overlayPanes) {
-                    const buttons = pane.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        if (btn.textContent.includes(targetBtnText)) {
-                            btn.click();
-                            console.log(`🚀 '${targetBtnText}'按钮已点击`);
-                            foundImageBtn = true;
-                            break;
-                        }
-                    }
-                    if (foundImageBtn) break;
-                }
-                if (!foundImageBtn) console.warn(`⚠️ 未找到'${targetBtnText}'按钮`);
-                
-            } else {
-                console.warn("⚠️ 未找到工具箱按钮"); 
-            }
-            await new Promise(r => setTimeout(r, 1000));
-        }
-        // 切换模式逻辑 (通用)
-        let modeBtn = document.querySelector('div[aria-label*="打开模式选择器"]') 
-        if (!modeBtn) {
-            modeBtn = document.querySelector('button[aria-label*="打开模式选择器"]') 
-        }
-
-        if (modeBtn) {
-            modeBtn.click();
-            console.log("🚀 模式选择已点击");
-
-            await new Promise(r => setTimeout(r, 1000));
-            
-            const menuContents = document.querySelectorAll('.mat-mdc-menu-content');
-            let foundTargetBtn = false;
-            let quantityLimitReached = false;
-            
-            const targetModel = (theModel && theModel.trim() !== '') ? theModel : "Pro";
-
-            // 1. 尝试寻找目标模型
-            for (const content of menuContents) {
-                const buttons = content.querySelectorAll('button');
-                for (const btn of buttons) {
-                    if (btn.textContent && btn.textContent.includes(targetModel)) {
-                        // 检查用量限额
-                        const hasLimitText = btn.textContent.includes("用量限额");
-                        const hasLimitDiv = btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限");
-                        
-                        if(hasLimitText || hasLimitDiv) {
-                            console.warn(`⚠️ [5/5] ${targetModel} 模式用量限额/数量上限`);
-                            quantityLimitReached = true;
-                            break; 
-                        } else {
-                            btn.click();
-                            console.log(`🚀 [5/5] 已切换至 ${targetModel} 模式`);
-                            foundTargetBtn = true;
-                            break;
-                        }
-                    }
-                }
-                if (foundTargetBtn || quantityLimitReached) break;
-            }
-
-            // 特殊处理：如果是 generate_video，且遇到限额或者找不到模型，直接抛出错误，不降级
-            if (theAction === "generate_video" && !foundTargetBtn) {
-                const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
-                throw new Error(`视频生成模式选择失败: ${reason}`);
-            }
-
-            // 2. 降级逻辑：如果没有找到目标模型（或者限额了），尝试寻找“思考”
-            if (!foundTargetBtn && targetModel !== "思考") {
-                console.log("⚠️ 准备降级至 '思考' 模式...");
-                for (const content of menuContents) {
-                    const buttons = content.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        if (btn.textContent && btn.textContent.includes("思考")) {
-                            if(btn.textContent.includes("用量限额") || (btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限"))){
-                                console.warn("⚠️ [5/5] '思考' 模式用量限额 (全部限额了)");
-                                break;
-                            } else {
-                                btn.click();
-                                console.log("🚀 [5/5] 降级成功，已切换至 '思考' 模式");
-                                foundTargetBtn = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (foundTargetBtn) break;
-                }
-            }
-
-            if (!foundTargetBtn) console.warn(`⚠️ [5/5] 模式切换失败: 未找到任何可用模型`);
-        } else {
-            console.warn("⚠️ 未找到模式按钮");
-        }
-       
-       
-    } else {
-        throw new Error("找不到开启新对话");
-    }
+    const theAction = "generate_video"; // 或者修改为您想要的默认测试动作
+    const theModel = "Pro";
+    await createNewChat(theAction, theModel);
 
     console.log("📝 开启新对话");
 }
 
-chrome.runtime.onMessage.addListener(async (request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "type_and_send") {
         console.log("⌨️ [Content] 收到输入任务:", request.text);
         console.log("⌨️ [Content] 收到任务ID:", request.task_id);
         console.log("⌨️ [Content] 收到任务类型:", request.task_action, "模型:", request.task_model);
-        await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model);
-        sendResponse({ success: true });
+        (async () => {
+            await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model, !!request.use_preloaded_tab);
+            sendResponse({ success: true });
+        })();
+        return true;
+    }
+
+    if (request.action === "prepare_gemini_image_preload") {
+        console.log("🖼️ [Content] 收到 Gemini 图片预加载请求, 模型:", request.task_model);
+        (async () => {
+            try {
+                await prepareGeminiImagePreload(request.task_model || "Pro");
+                sendResponse({ success: true });
+            } catch (err) {
+                console.error("❌ Gemini 图片预加载失败:", err);
+                sendResponse({ success: false, error: err.message });
+            }
+        })();
+        return true;
     }
 });
 
