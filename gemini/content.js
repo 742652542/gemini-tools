@@ -733,10 +733,10 @@ async function selectGeminiGenerationTool(action, options = {}) {
     if (!toolboxBtn) {
         console.warn("⚠️ 未找到工具箱按钮");
         if (strict) {
-            throw new Error("未找到工具箱按钮");
+            return false;
         }
         await new Promise(r => setTimeout(r, 1000));
-        return;
+        return false;
     }
 
     toolboxBtn.click();
@@ -764,11 +764,12 @@ async function selectGeminiGenerationTool(action, options = {}) {
     if (!foundTargetBtn) {
         console.warn(`⚠️ 未找到'${targetBtnText}'按钮`);
         if (strict) {
-            throw new Error(`未找到'${targetBtnText}'按钮`);
+            return false;
         }
     }
 
     await new Promise(r => setTimeout(r, 1000));
+    return foundTargetBtn;
 }
 
 async function selectGeminiModel(action, modelName, options = {}) {
@@ -781,9 +782,9 @@ async function selectGeminiModel(action, modelName, options = {}) {
     if (!modeBtn) {
         console.warn("⚠️ 未找到模式按钮");
         if (strict) {
-            throw new Error("未找到模式按钮");
+            return false;
         }
-        return;
+        return false;
     }
 
     modeBtn.click();
@@ -820,11 +821,19 @@ async function selectGeminiModel(action, modelName, options = {}) {
 
     if (action === "generate_video" && !foundTargetBtn) {
         const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
-        throw new Error(`视频生成模式选择失败: ${reason}`);
+        console.warn(`⚠️ 视频生成模式选择失败: ${reason}`);
+        if (strict) {
+            return false;
+        }
+        return false;
     }
 
     if (!allowFallback && !foundTargetBtn) {
         const reason = quantityLimitReached ? "该模型数量上限" : "未找到指定的模型";
+        if (strict) {
+            console.warn(`⚠️ 模式选择失败: ${targetModel} (${reason})`);
+            return false;
+        }
         throw new Error(`模式选择失败: ${targetModel} (${reason})`);
     }
 
@@ -850,6 +859,7 @@ async function selectGeminiModel(action, modelName, options = {}) {
     }
 
     if (!foundTargetBtn) console.warn("⚠️ [5/5] 模式切换失败: 未找到任何可用模型");
+    return foundTargetBtn;
 }
 
 async function createNewChat(action, modelName) {
@@ -875,8 +885,9 @@ async function createNewChat(action, modelName) {
 
 async function prepareGeminiImagePreload(modelName = "Pro") {
     console.log(`🖼️ 预加载 Gemini 图片模式 (模型: ${modelName || 'Pro'})`);
-    await selectGeminiGenerationTool("generate_image", { strict: true });
-    await selectGeminiModel("generate_image", modelName, { allowFallback: false, strict: true });
+    const toolReady = await selectGeminiGenerationTool("generate_image", { strict: true });
+    const modelReady = await selectGeminiModel("generate_image", modelName, { allowFallback: false, strict: true });
+    return { success: true };
 }
 
 // ==========================================
@@ -1114,8 +1125,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log("🖼️ [Content] 收到 Gemini 图片预加载请求, 模型:", request.task_model);
         (async () => {
             try {
-                await prepareGeminiImagePreload(request.task_model || "Pro");
-                sendResponse({ success: true });
+                const result = await prepareGeminiImagePreload(request.task_model || "Pro");
+                sendResponse(result || { success: true });
             } catch (err) {
                 console.error("❌ Gemini 图片预加载失败:", err);
                 sendResponse({ success: false, error: err.message });
