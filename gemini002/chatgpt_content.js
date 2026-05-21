@@ -636,7 +636,7 @@ async function getLatestReplyImages() {
     return { status: 'error', data: '未找到 assistant 回复区块' };
   }
 
-  const materialized = await waitForReplyImagesMaterialized(latestTurn, 60000);
+  const materialized = await waitForReplyImagesMaterialized(latestTurn, 120000);
   if (materialized.status !== 'success') {
     console.warn('⚠️ [图片提取] 图片落地失败，准备按分支返回错误:', materialized.data);
     if (hasImageTransitionSurface(latestTurn)) {
@@ -765,6 +765,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
     const initialTurnWasReady = isImageReadyTurn(initialTurn);
     const initialTurnWasGenerating = isImageGeneratingTurn(initialTurn);
     const startTime = Date.now();
+    const sameTurnReadyGraceMs = 3000;
     const textStableDelayMs = 2200;
     let textStableStartAt = 0;
     let lastTextLength = -1;
@@ -795,6 +796,13 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
       const becameReadyOnSameTurn = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && !initialTurnWasReady && readyNow;
       const hasImageFallback = !!(latestTurn && (hasImageInAssistantMessage(latestTurn) || latestTurn.querySelector('img')));
       const hasActualImageOutput = readyNow || hasImageFallback;
+      const sameTurnAlreadyUsable =
+        !!latestTurnIdentity &&
+        latestTurnIdentity === initialTurnIdentity &&
+        initialTurnWasReady &&
+        hasActualImageOutput &&
+        !loadingNow &&
+        Date.now() - startTime >= sameTurnReadyGraceMs;
       const latestAssistantText = getMeaningfulAssistantTextFromTurn(latestAssistantTurn);
       const textLength = latestAssistantText.length;
       const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0;
@@ -825,7 +833,8 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
           hasImageFallback,
           textLength,
           becameReadyOnSameTurn,
-          canUseSameTurnFallback
+          canUseSameTurnFallback,
+          sameTurnAlreadyUsable
         });
       }
 
@@ -835,7 +844,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         return;
       }
 
-      if (!stopBtn && (hasNewImageReply || becameReadyOnSameTurn) && hasActualImageOutput && Date.now() - startTime > 1000) {
+      if (!stopBtn && (hasNewImageReply || becameReadyOnSameTurn || sameTurnAlreadyUsable) && hasActualImageOutput && Date.now() - startTime > 1000) {
         console.log('✅ [生图分支] 检测到图片回复完成');
         finish(true);
         return;

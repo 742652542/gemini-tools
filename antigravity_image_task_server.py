@@ -3,26 +3,27 @@ import glob
 import json
 import os
 import queue
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import boto3
 import httpx
 import uvicorn
-import boto3
 from botocore.client import Config
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 
+ALLOWED_MODELS = {"gemini-3.1-flash-image", "gemini-3-pro-image"}
+
 BASE_DIR = Path(__file__).resolve().parent
 if os.name == "posix":
-    TASK_ROOT = Path("/data/www/other/ipsite/cache") / "chatgpt_image_tasks"
+    TASK_ROOT = Path("/data/www/other/ipsite/cache") / "antigravity_image_tasks"
 else:
-    TASK_ROOT = BASE_DIR / "chatgpt_image_tasks"
+    TASK_ROOT = BASE_DIR / "antigravity_image_tasks"
 RUNNING_DIR = TASK_ROOT / "running"
 RESULTS_DIR = TASK_ROOT / "results"
 WAIT_DIR = TASK_ROOT / "waits"
@@ -30,23 +31,18 @@ WAIT_DIR = TASK_ROOT / "waits"
 for p in [RUNNING_DIR, RESULTS_DIR, WAIT_DIR]:
     p.mkdir(parents=True, exist_ok=True)
 
-
-app = FastAPI(title="ChatGPT Image Task Server")
-
+app = FastAPI(title="Antigravity Image Task Server")
 TASK_QUEUE: "queue.Queue[str]" = queue.Queue()
 WORKER_THREADS = 100
 DEBUG = True
 CALLBACK_TIMEOUT = 4 * 60
 DEFAULT_CALLBACK_URL = "https://ixspy.com/api/gemini/receive-result"
-# DEFAULT_CALLBACK_URL = ""
+# UPSTREAM_BASE_URL = "http://127.0.0.1:8080/antigravity/v1beta"
+# UPSTREAM_API_KEY = ""
+UPSTREAM_BASE_URL = "http://192.168.7.163:8090/antigravity/v1beta"
+UPSTREAM_API_KEY = "sk-be3af4852f81204bebe5ba5fa319b9a6d372466a788d876e14170786677a0527"
 
-UPSTREAM_BASE_URL = "http://127.0.0.1:8080/v1"
-# UPSTREAM_BASE_URL = "http://152.53.127.53:8080/v1"
-UPSTREAM_API_KEY = "sk-e0db58439e138c9a5c823c3d58ad80c0ca122b155e8607ad0cd2d40283639e2b"
-# UPSTREAM_BASE_URL = "http://192.168.7.163:8090/v1"
-# UPSTREAM_API_KEY = "sk-458e3b43a4d1fdd329951bb62d812c91aaf77e3b8bc262c051f177d3d6ebe5ef"
-
-UPSTREAM_TIMEOUT = 3*60
+UPSTREAM_TIMEOUT = 3 * 60
 UPSTREAM_RETRY_TIMES = 2
 UPSTREAM_RETRY_INTERVAL = 1.5
 RUNNING_COUNT = 0
@@ -74,16 +70,16 @@ class CreateTaskBody(BaseModel):
     ratios: Optional[str] = "1:1"
     image: Optional[Any] = None
     output_format: str = "png"
-    model: str = "gpt-image-2"
+    model: str = "gemini-3.1-flash-image"
     callback_url: Optional[str] = None
-    source: Optional[str] = "chatgpt_image"
+    source: Optional[str] = "antigravity_image"
 
 
 class TaskRequest(BaseModel):
     action: str = "generate_image"
     prompt: str
     source: str = "gemini"
-    model: str = "Pro"
+    model: str = "gemini-3.1-flash-image"
     image: Optional[Any] = None
     client_id: Optional[str] = None
     url_id: Optional[str] = None
@@ -91,6 +87,223 @@ class TaskRequest(BaseModel):
     ratios: Optional[str] = "1:1"
     size: Optional[str] = None
     output_format: Optional[str] = "png"
+
+
+def _validate_model(model: Any) -> str:
+    value = str(model or "gemini-3.1-flash-image").strip()
+    if value not in ALLOWED_MODELS:
+        raise ValueError(f"unsupported model: {value}")
+    return value
+
+
+def _sanitize_image_size(size: Any) -> str:
+    value = str(size or "").strip().upper()
+    if value in {"1K", "2K", "4K"}:
+        return value
+    return "2K"
+
+
+def _get_image_extension(image_data: bytes) -> str:
+    if image_data.startswith(b"\xff\xd8"):
+        return ".jpg"
+    if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if image_data.startswith(b"GIF87a") or image_data.startswith(b"GIF89a"):
+        return ".gif"
+    if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
+        return ".webp"
+    return ".png"
+
+
+def _get_image_mime(image_data: bytes) -> str:
+    ext = _get_image_extension(image_data)
+    if ext == ".jpg":
+        return "image/jpeg"
+    if ext == ".gif":
+        return "image/gif"
+    if ext == ".webp":
+        return "image/webp"
+    return "image/png"
+
+
+def _normalize_image_bytes(image_input: Any) -> Optional[bytes]:
+    if isinstance(image_input, list):
+        for item in image_input:
+            data = _normalize_image_bytes(item)
+            if data:
+                return data
+        return None
+    if not isinstance(image_input, str):
+        return None
+    image_input = image_input.strip()
+    if not image_input:
+        return None
+    if image_input.startswith("data:") and "," in image_input:
+        image_input = image_input.split(",", 1)[1]
+    if image_input.startswith("http://") or image_input.startswith("https://"):
+        with httpx.Client(timeout=60) as client:
+            resp = client.get(image_input)
+            if resp.status_code // 100 != 2:
+                return None
+            return resp.content
+    try:
+        return base64.b64decode(image_input, validate=True)
+    except Exception:
+        return None
+
+
+def _normalize_images_bytes(image_input: Any) -> list[bytes]:
+    out: list[bytes] = []
+    if isinstance(image_input, list):
+        for item in image_input:
+            data = _normalize_image_bytes(item)
+            if data:
+                out.append(data)
+        return out
+    data = _normalize_image_bytes(image_input)
+    if data:
+        out.append(data)
+    return out
+
+
+def _sanitize_aspect_ratio(ratios: Any) -> str:
+    value = str(ratios or "").strip()
+    return value or "1:1"
+
+
+def _build_gemini_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    parts = [{"text": (payload.get("prompt") or "").strip()}]
+    for image_bytes in _normalize_images_bytes(payload.get("image")):
+        parts.append(
+            {
+                "inlineData": {
+                    "mimeType": _get_image_mime(image_bytes),
+                    "data": base64.b64encode(image_bytes).decode("ascii"),
+                }
+            }
+        )
+    return {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {
+                "aspectRatio": _sanitize_aspect_ratio(payload.get("ratios")),
+                "imageSize": _sanitize_image_size(payload.get("size")),
+            },
+        },
+    }
+
+
+def _extract_gemini_image(body: Dict[str, Any]) -> tuple[bytes, str]:
+    if isinstance(body, dict) and isinstance(body.get("response"), dict):
+        body = body["response"]
+    candidates = body.get("candidates") or []
+    for candidate in candidates:
+        content = candidate.get("content") or {}
+        parts = content.get("parts") or []
+        for part in parts:
+            inline_data = part.get("inlineData") or {}
+            data = inline_data.get("data")
+            mime_type = inline_data.get("mimeType") or "image/png"
+            if isinstance(data, str) and data.strip():
+                try:
+                    return base64.b64decode(data), mime_type
+                except Exception as exc:
+                    raise ValueError(f"failed to decode Gemini image: {exc}") from exc
+    raise ValueError("no image output returned by Gemini")
+
+
+def _iter_sse_payloads(raw_text: str) -> list[Dict[str, Any]]:
+    payloads: list[Dict[str, Any]] = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("data:"):
+            continue
+        json_str = line[5:].strip()
+        if not json_str or json_str == "[DONE]" or not json_str.startswith("{"):
+            continue
+        try:
+            payload = json.loads(json_str)
+        except Exception:
+            continue
+        payloads.append(payload)
+    return payloads
+
+
+def _build_upstream_url(model: str) -> str:
+    return f"{UPSTREAM_BASE_URL}/models/{model}:streamGenerateContent?alt=sse"
+
+
+def _build_generation_result(body: Any) -> Dict[str, Any]:
+    candidates_to_try: list[Dict[str, Any]] = []
+    if isinstance(body, str):
+        candidates_to_try.extend(_iter_sse_payloads(body))
+    elif isinstance(body, dict):
+        candidates_to_try.append(body)
+
+    last_error: Optional[Exception] = None
+    for candidate_body in candidates_to_try:
+        try:
+            image_data, mime_type = _extract_gemini_image(candidate_body)
+            return {
+                "success": True,
+                "mime_type": mime_type,
+                "b64_json": base64.b64encode(image_data).decode("ascii"),
+                "raw": body,
+            }
+        except ValueError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+
+    raise ValueError("no image output returned by Gemini")
+
+
+def _run_generate_image(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    model = _validate_model(payload.get("model"))
+    request_body = _build_gemini_request(payload)
+    headers = {
+        "Authorization": f"Bearer {UPSTREAM_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    url = _build_upstream_url(model)
+    attempt = 0
+    last_error: Dict[str, Any] = {"success": False, "error": "gemini upstream unknown error"}
+    retryable_status_codes = {408, 429, 500, 502, 503, 504}
+
+    while attempt <= UPSTREAM_RETRY_TIMES:
+        attempt += 1
+        try:
+            with httpx.Client(timeout=UPSTREAM_TIMEOUT) as client:
+                resp = client.post(url, json=request_body, headers=headers)
+            raw_text = resp.text
+            if resp.status_code // 100 != 2:
+                last_error = {
+                    "success": False,
+                    "error": "gemini upstream returned error",
+                    "attempt": attempt,
+                    "status_code": resp.status_code,
+                    "raw": raw_text,
+                }
+                if resp.status_code in retryable_status_codes and attempt <= UPSTREAM_RETRY_TIMES:
+                    time.sleep(UPSTREAM_RETRY_INTERVAL)
+                    continue
+                return last_error
+            return _build_generation_result(raw_text)
+        except Exception as exc:
+            last_error = {
+                "success": False,
+                "error": "gemini upstream request failed",
+                "attempt": attempt,
+                "exception": str(exc),
+            }
+            if attempt <= UPSTREAM_RETRY_TIMES:
+                time.sleep(UPSTREAM_RETRY_INTERVAL)
+                continue
+            return last_error
+    return last_error
 
 
 def _task_file(directory: Path, task_id: str) -> Path:
@@ -113,10 +326,9 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 
 def _clear_status_files(task_id: str) -> None:
-    for d in [RUNNING_DIR]:
-        p = _task_file(d, task_id)
-        if p.exists():
-            p.unlink(missing_ok=True)
+    p = _task_file(RUNNING_DIR, task_id)
+    if p.exists():
+        p.unlink(missing_ok=True)
 
 
 def _dated_dir(base_dir: Path) -> Path:
@@ -182,73 +394,6 @@ def _waiting_count() -> int:
     return len(glob.glob(str(WAIT_DIR / "*.json")))
 
 
-def _normalize_image_reference(image_input: Any) -> Optional[str]:
-    if isinstance(image_input, list):
-        for item in image_input:
-            data = _normalize_image_reference(item)
-            if data:
-                return data
-        return None
-
-    if not isinstance(image_input, str):
-        return None
-
-    image_input = image_input.strip()
-    if not image_input:
-        return None
-
-    if image_input.startswith("http://") or image_input.startswith("https://"):
-        return image_input
-
-    if image_input.startswith("data:"):
-        return image_input
-
-    try:
-        image_data = base64.b64decode(image_input, validate=True)
-    except Exception:
-        return None
-
-    return f"data:{_get_image_mime(image_data)};base64,{image_input}"
-
-
-def _normalize_image_references(image_input: Any) -> list[str]:
-    out: list[str] = []
-    if isinstance(image_input, list):
-        for item in image_input:
-            data = _normalize_image_reference(item)
-            if data:
-                out.append(data)
-        return out
-
-    data = _normalize_image_reference(image_input)
-    if data:
-        out.append(data)
-    return out
-
-
-def _get_image_extension(image_data: bytes) -> str:
-    if image_data.startswith(b"\xff\xd8"):
-        return ".jpg"
-    if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if image_data.startswith(b"GIF87a") or image_data.startswith(b"GIF89a"):
-        return ".gif"
-    if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
-        return ".webp"
-    return ".png"
-
-
-def _get_image_mime(image_data: bytes) -> str:
-    ext = _get_image_extension(image_data)
-    if ext == ".jpg":
-        return "image/jpeg"
-    if ext == ".gif":
-        return "image/gif"
-    if ext == ".webp":
-        return "image/webp"
-    return "image/png"
-
-
 def _upload_to_s3(file_path: str, object_name: str) -> Optional[str]:
     if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL, S3_BUCKET_NAME]):
         return None
@@ -269,206 +414,11 @@ def _upload_to_s3(file_path: str, object_name: str) -> Optional[str]:
         return None
 
 
-def _resolve_size_by_ratios(ratios: Any) -> str:
-    r = str(ratios or "").strip()
-    if _is_dimension_size(r):
-        return r
-
-    size_map = {
-        "1:1": "1024x1024",
-        "2:3": "848x1264",
-        "3:2": "1264x848",
-        "3:4": "896x1200",
-        "4:3": "1200x896",
-        "4:5": "928x1152",
-        "5:4": "1152x928",
-        "9:16": "768x1376",
-        "16:9": "1376x768",
-        "21:9": "1584x672",
-        "auto": "1024x1024",
-        "自适应": "1024x1024",
+def _build_completed_response(result_data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "status": "completed",
+        "result": result_data,
     }
-    return size_map.get(r, "1024x1024")
-
-
-def _is_supported_size(size: str) -> bool:
-    return _is_dimension_size(size) or size in {
-        "1024x1024",
-        "848x1264",
-        "1264x848",
-        "896x1200",
-        "1200x896",
-        "928x1152",
-        "1152x928",
-        "768x1376",
-        "1376x768",
-        "1584x672",
-    }
-
-
-def _is_dimension_size(size: str) -> bool:
-    return bool(re.fullmatch(r"\d+x\d+", size))
-
-
-def _sanitize_size(size: Any, ratios: Any) -> str:
-    if isinstance(size, str) and size.strip() and _is_supported_size(size.strip()):
-        return size.strip()
-    return _resolve_size_by_ratios(ratios)
-
-
-def _run_generate_image(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not UPSTREAM_BASE_URL or not UPSTREAM_API_KEY:
-        return {"success": False, "error": "fallback 配置缺失"}
-
-    size = _sanitize_size(payload.get("size"), payload.get("ratios", "1:1"))
-
-    req_payload = {
-        "model": "gpt-image-2",
-        "prompt": payload.get("prompt") or "",
-        "size": size,
-        "output_format": payload.get("output_format") or "png",
-    }
-
-    headers = {"Authorization": f"Bearer {UPSTREAM_API_KEY}"}
-    image_refs = _normalize_image_references(payload.get("image"))
-
-    attempt = 0
-    last_error: Dict[str, Any] = {"success": False, "error": "fallback 未知错误"}
-    retryable_status_codes = {408, 429, 500, 502, 503, 504}
-
-    def _log_upstream_response(resp: httpx.Response, body: Dict[str, Any], phase: str, mode: Optional[str] = None) -> None:
-        request_id = resp.headers.get("x-request-id") or resp.headers.get("request-id") or ""
-        mode_text = f" mode={mode}" if mode else ""
-        err_obj = (body or {}).get("error") or {}
-        err_type = err_obj.get("type") or ""
-        err_msg = err_obj.get("message") or ""
-        if isinstance(err_msg, str) and len(err_msg) > 120:
-            err_msg = err_msg[:120] + "..."
-        _debug_log(
-            f"[upstream] phase={phase}{mode_text} task_id={task_id} attempt={attempt} "
-            f"status_code={resp.status_code} request_id={request_id} error_type={err_type} error_msg={err_msg}"
-        )
-
-    while attempt <= UPSTREAM_RETRY_TIMES:
-        attempt += 1
-        try:
-            with httpx.Client(timeout=UPSTREAM_TIMEOUT) as client:
-                if image_refs:
-                    edit_headers = dict(headers)
-                    edit_headers["Content-Type"] = "application/json"
-                    edit_payload = {
-                        "model": req_payload["model"],
-                        "prompt": req_payload["prompt"],
-                        "size": req_payload["size"],
-                        "output_format": req_payload["output_format"],
-                        "response_format": "b64_json",
-                        "images": [{"image_url": image_ref} for image_ref in image_refs],
-                    }
-                    resp = client.post(f"{UPSTREAM_BASE_URL}/images/edits", json=edit_payload, headers=edit_headers)
-                    try:
-                        body = resp.json()
-                    except Exception:
-                        body = {"raw_text": resp.text}
-                    _log_upstream_response(resp, body, "images.edits", "image_url")
-
-                    if resp.status_code // 100 != 2:
-                        err_type = (((body or {}).get("error") or {}).get("type") or "").strip()
-                        custom_error = "fallback 接口返回异常"
-                        if resp.status_code == 502 and err_type == "upstream_error":
-                            custom_error = "show-提示词限制或者触发品牌保护。"
-                        last_error = {
-                            "success": False,
-                            "error": custom_error,
-                            "attempt": attempt,
-                            "image_upload_mode": "image_url",
-                            "image_count": len(image_refs),
-                            "status_code": resp.status_code,
-                            "raw": body,
-                        }
-                        should_retry = resp.status_code in retryable_status_codes and err_type != "upstream_error"
-                        if should_retry and attempt <= UPSTREAM_RETRY_TIMES:
-                            time.sleep(UPSTREAM_RETRY_INTERVAL)
-                            continue
-                        return last_error
-
-                    b64 = (((body or {}).get("data") or [{}])[0] or {}).get("b64_json", "")
-                    if isinstance(b64, str) and b64:
-                        return {
-                            "success": True,
-                            "b64_json": b64,
-                            "raw": body,
-                            "image_upload_mode": "image_url",
-                            "image_count": len(image_refs),
-                        }
-
-                    last_error = {
-                        "success": False,
-                        "error": "fallback 接口未返回图片数据",
-                        "attempt": attempt,
-                        "image_upload_mode": "image_url",
-                        "image_count": len(image_refs),
-                        "raw": body,
-                    }
-                    if attempt <= UPSTREAM_RETRY_TIMES:
-                        time.sleep(UPSTREAM_RETRY_INTERVAL)
-                        continue
-                    return last_error
-
-                generation_headers = dict(headers)
-                generation_headers["Content-Type"] = "application/json"
-                resp = client.post(f"{UPSTREAM_BASE_URL}/images/generations", json=req_payload, headers=generation_headers)
-
-            try:
-                body = resp.json()
-            except Exception:
-                body = {"raw_text": resp.text}
-            _log_upstream_response(resp, body, "images.generations")
-
-            if resp.status_code // 100 != 2:
-                err_type = (((body or {}).get("error") or {}).get("type") or "").strip()
-                custom_error = "fallback 接口返回异常"
-                if resp.status_code == 502 and err_type == "upstream_error":
-                    custom_error = "show-提示词限制或者触发品牌保护。"
-                last_error = {
-                    "success": False,
-                    "error": custom_error,
-                    "attempt": attempt,
-                    "status_code": resp.status_code,
-                    "raw": body,
-                }
-                should_retry = resp.status_code in retryable_status_codes and err_type != "upstream_error"
-                if should_retry and attempt <= UPSTREAM_RETRY_TIMES:
-                    time.sleep(UPSTREAM_RETRY_INTERVAL)
-                    continue
-                return last_error
-
-            b64 = (((body or {}).get("data") or [{}])[0] or {}).get("b64_json", "")
-            if not isinstance(b64, str) or not b64:
-                last_error = {
-                    "success": False,
-                    "error": "fallback 接口未返回图片数据",
-                    "attempt": attempt,
-                    "raw": body,
-                }
-                if attempt <= UPSTREAM_RETRY_TIMES:
-                    time.sleep(UPSTREAM_RETRY_INTERVAL)
-                    continue
-                return last_error
-
-            return {"success": True, "b64_json": b64, "raw": body}
-        except Exception as exc:
-            last_error = {
-                "success": False,
-                "error": "fallback 请求异常",
-                "attempt": attempt,
-                "exception": str(exc),
-            }
-            if attempt <= UPSTREAM_RETRY_TIMES:
-                time.sleep(UPSTREAM_RETRY_INTERVAL)
-                continue
-            return last_error
-
-    return last_error
 
 
 def _push_callback(task_id: str, final_data: Dict[str, Any], callback_url: str) -> None:
@@ -481,8 +431,7 @@ def _push_callback(task_id: str, final_data: Dict[str, Any], callback_url: str) 
         with httpx.Client(timeout=CALLBACK_TIMEOUT) as client:
             resp = client.post(callback_url, json=callback_payload)
             _debug_log(
-                f"[callback] task_id={task_id} url={callback_url} "
-                f"status_code={resp.status_code} body={resp.text}"
+                f"[callback] task_id={task_id} url={callback_url} status_code={resp.status_code} body={resp.text}"
             )
     except Exception as exc:
         _debug_log(f"[callback] task_id={task_id} url={callback_url} exception={str(exc)}")
@@ -512,13 +461,6 @@ def _build_error_result(task_id: str, payload: Dict[str, Any], result: Dict[str,
         "message": result.get("message"),
         "url_id": payload.get("url_id"),
         "client_id": payload.get("client_id"),
-    }
-
-
-def _build_completed_response(result_data: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "status": "completed",
-        "result": result_data,
     }
 
 
@@ -553,7 +495,7 @@ def _save_task_file_from_result(task_id: str, payload: Dict[str, Any], result: D
         return {
             "task_id": task_id,
             "action": payload.get("action", "generate_image"),
-            "source": payload.get("source", "chatgpt_image"),
+            "source": payload.get("source", "antigravity_image"),
             "status": "success" if cdn_url else "error",
             "cdn_url": cdn_url,
             "file_type": "cdn_url" if cdn_url else "none",
@@ -562,8 +504,6 @@ def _save_task_file_from_result(task_id: str, payload: Dict[str, Any], result: D
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-
-    return None
 
 
 def _worker_loop(worker_name: str) -> None:
@@ -651,6 +591,10 @@ def create_task(body: CreateTaskBody) -> Dict[str, Any]:
 
     task_id = f"img_{uuid.uuid4().hex[:16]}"
     payload = body.dict()
+    try:
+        payload["model"] = _validate_model(body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     payload["task_id"] = task_id
     payload["created_at"] = int(time.time())
     payload["status"] = "queued"
@@ -696,7 +640,6 @@ def get_task_status(task_id: str) -> Dict[str, Any]:
 @app.post("/api/ask")
 async def send_task(request: TaskRequest) -> Dict[str, Any]:
     action = request.action or "generate_image"
-    model = request.model or "Pro"
     is_continue = bool(request.client_id)
     prompt = (request.prompt or "").strip()
 
@@ -704,6 +647,11 @@ async def send_task(request: TaskRequest) -> Dict[str, Any]:
         return {"status": "error", "message": "无效的操作"}
     if not prompt:
         return {"status": "error", "message": "prompt 不能为空"}
+
+    try:
+        model = _validate_model(request.model)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
 
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     task_payload: Dict[str, Any] = {
@@ -817,5 +765,5 @@ def health() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "9092"))
+    port = int(os.getenv("PORT", "9093"))
     uvicorn.run(app, host=host, port=port)

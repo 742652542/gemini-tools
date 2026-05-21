@@ -363,6 +363,7 @@ function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadRe
                 task_id: taskId,
                 task_action: task.action,
                 task_model: task.model,
+                targetRatio: task.targetRatio,
                 source: taskSource,
                 use_preloaded_tab: isPreloadReuse
             }).catch(err => {

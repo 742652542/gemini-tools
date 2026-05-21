@@ -68,6 +68,7 @@ class TaskRequest(BaseModel):
     source: str = "gemini"
     model: str
     image: Optional[object] = None
+    targetRatio: Optional[str] = None
     client_id: Optional[str] = None
 
 # === [新增] 辅助函数：跨日期文件夹查找文件 ===
@@ -526,7 +527,8 @@ async def send_task(request: TaskRequest):
         "task_id": task_id,
         "prompt": request.prompt,
         "source": request.source,
-        "image": request.image
+        "image": request.image,
+        "targetRatio": request.targetRatio
         }    
     else:
         return {"status": "error", "message": "无效的操作"}     

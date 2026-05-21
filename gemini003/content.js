@@ -772,11 +772,141 @@ async function selectGeminiGenerationTool(action, options = {}) {
     return foundTargetBtn;
 }
 
+function isVisibleElement(element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function getModeMenuItems() {
+    return Array.from(document.querySelectorAll([
+        '.mat-mdc-menu-content button',
+        '.cdk-overlay-pane gem-menu-item[role="menuitem"]',
+        '.cdk-overlay-pane [data-test-id^="bard-mode-option-"]',
+        '.cdk-overlay-pane [data-mode-id]'
+    ].join(','))).filter(isVisibleElement);
+}
+
+function getMenuItemText(menuItem) {
+    return (menuItem && menuItem.textContent ? menuItem.textContent : '').replace(/\s+/g, ' ').trim();
+}
+
+function hasModelLimit(menuItem, text) {
+    const normalizedText = (text || getMenuItemText(menuItem)).toLowerCase();
+    return normalizedText.includes('用量限额') ||
+        normalizedText.includes('数量上限') ||
+        normalizedText.includes('limit');
+}
+
+function clickMenuItem(menuItem) {
+    if (!menuItem) return false;
+    const clickable = menuItem.tagName === 'GEM-MENU-ITEM'
+        ? (menuItem.querySelector('[role="menuitem"]') || menuItem)
+        : menuItem;
+
+    if (typeof clickable.click === 'function') {
+        clickable.click();
+        return true;
+    }
+
+    return false;
+}
+
+async function waitForModeMenuItems(timeoutMs = 5000) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+        const items = getModeMenuItems();
+        if (items.length > 0) {
+            return items;
+        }
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return [];
+}
+
+async function selectGeminiVideoAspectRatio(targetRatio = "16:9", options = {}) {
+    const { strict = false } = options;
+    const ratioBtnSelectors = [
+        'button[aria-haspopup="menu"] .gds-body-s',
+        'button .gds-body-s',
+        'button .gds-body-m'
+    ];
+
+    let ratioBtn = null;
+    for (const selector of ratioBtnSelectors) {
+        const labels = document.querySelectorAll(selector);
+        for (const label of labels) {
+            const text = (label.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!text.includes('16:9') && !text.includes('9:16') && !text.includes('横向') && !text.includes('纵向')) continue;
+
+            const candidate = label.closest('button');
+            if (candidate && isVisibleElement(candidate)) {
+                ratioBtn = candidate;
+                break;
+            }
+        }
+        if (ratioBtn) break;
+    }
+
+    if (!ratioBtn) {
+        console.warn("⚠️ 未找到视频比例按钮");
+        return strict ? false : false;
+    }
+
+    ratioBtn.click();
+    console.log("🚀 视频比例菜单已打开");
+
+    const startTime = Date.now();
+    let ratioItems = [];
+    while (Date.now() - startTime < 5000) {
+        ratioItems = Array.from(document.querySelectorAll('.cdk-overlay-pane input-companion-item[role="menuitemradio"]')).filter(isVisibleElement);
+        if (ratioItems.length > 0) break;
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (ratioItems.length === 0) {
+        console.warn("⚠️ 未找到视频比例菜单项");
+        return strict ? false : false;
+    }
+
+    for (const item of ratioItems) {
+        const text = (item.getAttribute('aria-label') || item.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text.includes(targetRatio)) continue;
+
+        if (item.getAttribute('aria-checked') === 'true') {
+            console.log(`🚀 视频比例已是 ${targetRatio}`);
+            return true;
+        }
+
+        item.click();
+        console.log(`🚀 视频比例已切换至 ${targetRatio}`);
+        await new Promise(r => setTimeout(r, 500));
+        return true;
+    }
+
+    console.warn(`⚠️ 未找到视频比例 ${targetRatio}`);
+    return strict ? false : false;
+}
+
 async function selectGeminiModel(action, modelName, options = {}) {
     const { allowFallback = true, strict = false } = options;
-    let modeBtn = document.querySelector('div[aria-label*="打开模式选择器"]');
-    if (!modeBtn) {
-        modeBtn = document.querySelector('button[aria-label*="打开模式选择器"]');
+    const modeBtnSelectors = [
+        'div[aria-label*="打开模式选择器"]',
+        'button[aria-label*="打开模式选择器"]',
+        'div[aria-label*="Open mode selector"]',
+        'button[aria-label*="Open mode selector"]',
+        'button[data-test-id="bard-mode-menu-button"]',
+        '[data-test-id="bard-mode-menu-button"] button',
+        'button[aria-haspopup="menu"][aria-controls^="ng-menu-"]'
+    ];
+
+    let modeBtn = null;
+    for (const selector of modeBtnSelectors) {
+        const candidate = document.querySelector(selector);
+        if (candidate && isVisibleElement(candidate)) {
+            modeBtn = candidate;
+            break;
+        }
     }
 
     if (!modeBtn) {
@@ -790,33 +920,32 @@ async function selectGeminiModel(action, modelName, options = {}) {
     modeBtn.click();
     console.log("🚀 模式选择已点击");
 
-    await new Promise(r => setTimeout(r, 1000));
-
-    const menuContents = document.querySelectorAll('.mat-mdc-menu-content');
+    const menuItems = await waitForModeMenuItems();
     let foundTargetBtn = false;
     let quantityLimitReached = false;
     const targetModel = (modelName && modelName.trim() !== '') ? modelName : "Pro";
 
-    for (const content of menuContents) {
-        const buttons = content.querySelectorAll('button');
-        for (const btn of buttons) {
-            if (btn.textContent && btn.textContent.includes(targetModel)) {
-                const hasLimitText = btn.textContent.includes("用量限额");
-                const hasLimitDiv = btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限");
+    for (const item of menuItems) {
+        const itemText = getMenuItemText(item);
+        if (!itemText || !itemText.includes(targetModel)) continue;
 
-                if (hasLimitText || hasLimitDiv) {
-                    console.warn(`⚠️ [5/5] ${targetModel} 模式用量限额/数量上限`);
-                    quantityLimitReached = true;
-                    break;
-                } else {
-                    btn.click();
-                    console.log(`🚀 [5/5] 已切换至 ${targetModel} 模式`);
-                    foundTargetBtn = true;
-                    break;
-                }
-            }
+        if (hasModelLimit(item, itemText)) {
+            console.warn(`⚠️ [5/5] ${targetModel} 模式用量限额/数量上限`);
+            quantityLimitReached = true;
+            break;
         }
-        if (foundTargetBtn || quantityLimitReached) break;
+
+        const alreadySelected = item.getAttribute('data-active') === 'true' ||
+            item.classList.contains('selected') ||
+            item.classList.contains('active');
+
+        if (!alreadySelected) {
+            clickMenuItem(item);
+        }
+
+        console.log(`🚀 [5/5] 已切换至 ${targetModel} 模式`);
+        foundTargetBtn = true;
+        break;
     }
 
     if (action === "generate_video" && !foundTargetBtn) {
@@ -839,22 +968,27 @@ async function selectGeminiModel(action, modelName, options = {}) {
 
     if (!foundTargetBtn && allowFallback && targetModel !== "思考") {
         console.log("⚠️ 准备降级至 '思考' 模式...");
-        for (const content of menuContents) {
-            const buttons = content.querySelectorAll('button');
-            for (const btn of buttons) {
-                if (btn.textContent && btn.textContent.includes("思考")) {
-                    if (btn.textContent.includes("用量限额") || (btn.querySelector('.main-text.gds-body-m') && btn.querySelector('.main-text.gds-body-m').textContent.includes("数量上限"))) {
-                        console.warn("⚠️ [5/5] '思考' 模式用量限额 (全部限额了)");
-                        break;
-                    } else {
-                        btn.click();
-                        console.log("🚀 [5/5] 降级成功，已切换至 '思考' 模式");
-                        foundTargetBtn = true;
-                        break;
-                    }
-                }
+        const fallbackMenuItems = menuItems.length > 0 ? menuItems : await waitForModeMenuItems(1500);
+        for (const item of fallbackMenuItems) {
+            const itemText = getMenuItemText(item);
+            if (!itemText || !itemText.includes("思考")) continue;
+
+            if (hasModelLimit(item, itemText)) {
+                console.warn("⚠️ [5/5] '思考' 模式用量限额 (全部限额了)");
+                break;
             }
-            if (foundTargetBtn) break;
+
+            const alreadySelected = item.getAttribute('data-active') === 'true' ||
+                item.classList.contains('selected') ||
+                item.classList.contains('active');
+
+            if (!alreadySelected) {
+                clickMenuItem(item);
+            }
+
+            console.log("🚀 [5/5] 降级成功，已切换至 '思考' 模式");
+            foundTargetBtn = true;
+            break;
         }
     }
 
@@ -862,7 +996,7 @@ async function selectGeminiModel(action, modelName, options = {}) {
     return foundTargetBtn;
 }
 
-async function createNewChat(action, modelName) {
+async function createNewChat(action, modelName, targetRatio = "9:16") {
     console.log(`📝 开启新对话 (动作: ${action}, 模型: ${modelName || '默认 Pro'})`);
     
     await new Promise(r => setTimeout(r, 500)); // UI 缓冲
@@ -877,6 +1011,9 @@ async function createNewChat(action, modelName) {
         await new Promise(r => setTimeout(r, 1000));
         await selectGeminiGenerationTool(action);
         await selectGeminiModel(action, modelName);
+        if (action === "generate_video") {
+            await selectGeminiVideoAspectRatio(targetRatio || "9:16");
+        }
         
     } else {
         throw new Error("找不到开启新对话");
@@ -887,14 +1024,14 @@ async function prepareGeminiImagePreload(modelName = "Pro") {
     console.log(`🖼️ 预加载 Gemini 图片模式 (模型: ${modelName || 'Pro'})`);
     const toolReady = await selectGeminiGenerationTool("generate_image", { strict: true });
     const modelReady = await selectGeminiModel("generate_image", modelName, { allowFallback: false, strict: true });
-    return { success: true };
+    return { success: !!(toolReady && modelReady) };
 }
 
 // ==========================================
 // 5. 流程编排 (测试入口)
 // ==========================================
 
-async function typeAndSend(text = "根据图片，生成一张有年代感的图片", task_id = 0, image=[], is_continue = false, action = "generate_image", model = "Pro", usePreloadedTab = false) {
+async function typeAndSend(text = "根据图片，生成一张有年代感的图片", task_id = 0, image=[], is_continue = false, action = "generate_image", model = "Pro", usePreloadedTab = false, targetRatio = "9:16") {
     const log = document.getElementById('status-log');
     if(log) log.innerText = `🚀 任务启动: ${task_id} (${action})`;
     let urlId = null;
@@ -910,7 +1047,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         } else {
             console.log(`1/5 创建新聊天窗口... [Action: ${action}, Model: ${model}]`);
             if(log) log.innerText = "1/5 创建新聊天窗口...";
-            await createNewChat(action, model);
+            await createNewChat(action, model, targetRatio);
             await new Promise(r => setTimeout(r, 2000));
         }
         
@@ -1115,7 +1252,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log("⌨️ [Content] 收到任务ID:", request.task_id);
         console.log("⌨️ [Content] 收到任务类型:", request.task_action, "模型:", request.task_model);
         (async () => {
-            await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model, !!request.use_preloaded_tab);
+        await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model, !!request.use_preloaded_tab, request.targetRatio || "9:16");
             sendResponse({ success: true });
         })();
         return true;
