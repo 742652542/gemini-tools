@@ -375,6 +375,50 @@ function ensureImageLoaded(img, timeoutMs = 30000) {
     });
 }
 
+function getReplyBlockImages(block) {
+    if (!block) return [];
+
+    const images = Array.from(block.querySelectorAll([
+        'generated-image img',
+        '.attachment-container.generated-images img',
+        'single-image img.image'
+    ].join(',')));
+
+    return images.filter((img, index, arr) => {
+        if (arr.indexOf(img) !== index) return false;
+        if (img.getAttribute('data-test-id') === 'uploaded-img') return false;
+        if (!img.closest('generated-image, .attachment-container.generated-images, single-image')) return false;
+        const src = img.src || img.getAttribute('data-src') || '';
+        return src && !src.includes('data:image/gif;base64') && !src.includes('placeholder');
+    });
+}
+
+async function findLatestUsableReplyBlock(timeoutMs = 30000) {
+    const startTime = Date.now();
+    let latestNonEmptyBlock = null;
+
+    while (Date.now() - startTime < timeoutMs) {
+        const responseBlocks = Array.from(document.querySelectorAll('message-content')).reverse();
+
+        for (const block of responseBlocks) {
+            const images = getReplyBlockImages(block);
+            const textContent = (block.textContent || '').trim();
+
+            if (images.length > 0) {
+                return block;
+            }
+
+            if (!latestNonEmptyBlock && textContent) {
+                latestNonEmptyBlock = block;
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    return latestNonEmptyBlock;
+}
+
 async function getLatestReplyImages(task_id) {
     await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
 
@@ -389,23 +433,27 @@ async function getLatestReplyImages(task_id) {
         return { status: 'error', data: '未找到回答' };
     } 
 
-    const lastBlock = responseBlocks[responseBlocks.length - 1];
+    const lastBlock = await findLatestUsableReplyBlock();
+    if (!lastBlock) {
+        console.log("未找到有效回答");
+        return { status: 'error', data: '未找到有效回答' };
+    }
     
     // 1. 获取图片
-    const originalImages = lastBlock.querySelectorAll('img');
+    const originalImages = getReplyBlockImages(lastBlock);
     const textContent = lastBlock.textContent ? lastBlock.textContent : "";
     // 如果没有图片，直接返回包含文本的错误对象
+    console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
     if (originalImages.length === 0) {
         return { status: 'error', data: 'show-'+textContent };
     }
-    console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
     
     // 确保图片加载完成（为了获取 naturalWidth/Height）
-    await Promise.all(Array.from(originalImages).map(img => ensureImageLoaded(img)));
+    await Promise.all(originalImages.map(img => ensureImageLoaded(img)));
     
     // 2. 并发处理图片转换
     // 使用 map 返回 Promise，最后由 Promise.all 统一收集结果
-    const processingPromises = Array.from(originalImages).map(async (img) => {
+    const processingPromises = originalImages.map(async (img) => {
         const w = img.naturalWidth;
         const h = img.naturalHeight;
 
@@ -441,6 +489,10 @@ async function getLatestReplyImages(task_id) {
       // 3. 过滤掉失败的(null)或未定义的项，得到纯净的 base64 数组
       const validBase64Images = results.filter((item) => item);
 
+      if (validBase64Images.length === 0) {
+          return { status: 'error', data: 'show-图片已生成，但图片数据提取失败，请重试。' };
+      }
+
       return { status: "success", data: validBase64Images,message: 'show-'+textContent };
     }
 }
@@ -452,10 +504,11 @@ async function downloadImage(task_id) {
     const responseBlocks = document.querySelectorAll('message-content');
     if (responseBlocks.length === 0) return "未找到回答";
 
-    const lastBlock = responseBlocks[responseBlocks.length - 1];
+    const lastBlock = await findLatestUsableReplyBlock();
+    if (!lastBlock) return "未找到有效回答";
     
     // 1. 获取原始 DOM 中的图片
-    const originalImages = lastBlock.querySelectorAll('img');
+    const originalImages = getReplyBlockImages(lastBlock);
     
     if (originalImages.length > 0) {
         console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
@@ -1214,6 +1267,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         
         // 如果是生成图片，且包含原有下载逻辑，则执行下载
         if (action === "generate_image") {
+            await new Promise(r => setTimeout(r, 1000));
              downloadImage(task_id); 
         } else if (action === "generate_video") {
              downloadVideo(task_id);

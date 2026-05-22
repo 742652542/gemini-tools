@@ -766,8 +766,10 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
     const initialTurnWasGenerating = isImageGeneratingTurn(initialTurn);
     const startTime = Date.now();
     const sameTurnReadyGraceMs = 3000;
+    const imageStableBypassStopMs = 5000;
     const textStableDelayMs = 2200;
     let textStableStartAt = 0;
+    let imageStableStartAt = 0;
     let lastTextLength = -1;
     let lastStateKey = '';
 
@@ -796,6 +798,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
       const becameReadyOnSameTurn = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && !initialTurnWasReady && readyNow;
       const hasImageFallback = !!(latestTurn && (hasImageInAssistantMessage(latestTurn) || latestTurn.querySelector('img')));
       const hasActualImageOutput = readyNow || hasImageFallback;
+      const imageCandidateCount = latestTurn ? getImageCandidatesFromTurn(latestTurn).length : 0;
       const sameTurnAlreadyUsable =
         !!latestTurnIdentity &&
         latestTurnIdentity === initialTurnIdentity &&
@@ -831,6 +834,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
           readyNow,
           hasTransitionSurface,
           hasImageFallback,
+          imageCandidateCount,
           textLength,
           becameReadyOnSameTurn,
           canUseSameTurnFallback,
@@ -840,12 +844,32 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
 
       if (loadingNow) {
         textStableStartAt = 0;
+        imageStableStartAt = 0;
         lastTextLength = -1;
         return;
       }
 
+      if (hasActualImageOutput) {
+        if (imageStableStartAt === 0) {
+          imageStableStartAt = Date.now();
+        }
+      } else {
+        imageStableStartAt = 0;
+      }
+
       if (!stopBtn && (hasNewImageReply || becameReadyOnSameTurn || sameTurnAlreadyUsable) && hasActualImageOutput && Date.now() - startTime > 1000) {
         console.log('✅ [生图分支] 检测到图片回复完成');
+        finish(true);
+        return;
+      }
+
+      if (
+        stopBtn &&
+        hasActualImageOutput &&
+        imageStableStartAt > 0 &&
+        Date.now() - imageStableStartAt >= imageStableBypassStopMs
+      ) {
+        console.warn(`⚠️ [生图分支] stop 按钮未恢复，但图片已稳定 ${imageStableBypassStopMs}ms，直接提取首图返回`);
         finish(true);
         return;
       }
