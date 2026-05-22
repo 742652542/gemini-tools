@@ -9,6 +9,7 @@ import uuid
 import os
 import time
 import glob
+import hashlib
 from datetime import datetime, timedelta
 import subprocess
 from collections import deque
@@ -60,6 +61,56 @@ WAIT_DIR = "task_wait"  # 排队任务保持扁平结构，方便排序
 for directory in [RESULTS_DIR, FILES_DIR, WAIT_DIR]:
     if not os.path.exists(directory):
         os.makedirs(directory)
+
+def _file_sha256(file_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def process_gemini_watermark(image_path: str) -> bool:
+    """Try legacy watermark removal first, then retry with the default profile."""
+    original_data = None
+    try:
+        with open(image_path, "rb") as f:
+            original_data = f.read()
+        original_hash = hashlib.sha256(original_data).hexdigest()
+
+        attempts = [
+            ("legacy", ["GeminiWatermarkTool", "--legacy", "--no-banner", "-i", image_path, "-o", image_path]),
+            ("default", ["GeminiWatermarkTool", "--no-banner", image_path]),
+        ]
+
+        for profile, command in attempts:
+            if profile == "default":
+                with open(image_path, "wb") as f:
+                    f.write(original_data)
+
+            try:
+                result = subprocess.run(command, check=False)
+            except Exception as e:
+                print(f"Failed to execute GeminiWatermarkTool ({profile}): {e}")
+                result = None
+
+            if result and result.returncode == 0 and _file_sha256(image_path) != original_hash:
+                print(f"Watermark processing successful ({profile}): {image_path}")
+                return True
+
+            print(f"Watermark processing not successful ({profile}), trying fallback if available: {image_path}")
+
+        with open(image_path, "wb") as f:
+            f.write(original_data)
+        return False
+    except Exception as e:
+        print(f"Watermark processing exception: {e}")
+        if original_data is not None:
+            try:
+                with open(image_path, "wb") as f:
+                    f.write(original_data)
+            except Exception as restore_error:
+                print(f"Failed to restore original image after watermark exception: {restore_error}")
+        return False
 
 # === 请求体模型 ===
 class TaskRequest(BaseModel):
@@ -337,8 +388,9 @@ def save_task_result(task_id: str, client_id: str, data: dict):
                     with open(temp_file_path, "wb") as f:
                         f.write(image_data)
 
-                    # B. 调用水印工具
-                    subprocess.run(f'GeminiWatermarkTool "{temp_file_path}"', shell=True, check=True)
+                    # B. 调用水印工具：优先 legacy，未处理成功再用默认 profile
+                    if not process_gemini_watermark(temp_file_path):
+                        print(f"GeminiWatermarkTool did not modify image, continuing upload: {temp_file_path}")
                     
                     # C. 上传到 S3
                     object_name = f"ai/img/task_results/{date_folder}/{task_id+str(datetime.now().timestamp())}{ext}"
@@ -397,11 +449,8 @@ def save_task_file(task_id: str, data: dict):
             file_extension = ".bin"
         
         if action == "generate_image":
-            try:
-                subprocess.run(f'GeminiWatermarkTool "{image_disk_path}"', shell=True, check=True)
-                print(f"Watermark processing successful: {image_disk_path}")
-            except subprocess.CalledProcessError as e:
-                print(f"Failed to execute GeminiWatermarkTool: {e}")
+            if not process_gemini_watermark(image_disk_path):
+                print(f"Failed to execute GeminiWatermarkTool: {image_disk_path}")
         elif action == "generate_video":
             try:
                 subprocess.run(f'GeminiWatermarkTool-Video.exe "{image_disk_path}"', shell=True, check=True)

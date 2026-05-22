@@ -17,6 +17,7 @@ let preloadLoadListener = null;
 let preloadPrepareTimer = null;
 let preloadAttemptId = 0;
 let preloadPrepareStarted = false;
+const ENABLE_PRELOAD = false;
 const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
 
@@ -92,6 +93,8 @@ function clearPreloadTab() {
 }
 
 function schedulePreloadRestore(delay = 500) {
+    if (!ENABLE_PRELOAD) return;
+
     if (preloadRestoreTimer) {
         clearTimeout(preloadRestoreTimer);
     }
@@ -102,6 +105,8 @@ function schedulePreloadRestore(delay = 500) {
 }
 
 function canReusePreloadForTask(task) {
+    if (!ENABLE_PRELOAD) return false;
+
     return isGeminiImageTask(task) && preloadState === "ready" && preloadModel === PRELOAD_MODEL && !!preloadTabId;
 }
 
@@ -142,6 +147,8 @@ function startPreloadPrepare(attemptId, attemptTabId, loadListener) {
 }
 
 function ensurePreloadTab() {
+    if (!ENABLE_PRELOAD) return;
+
     if (preloadState === "preparing" || preloadState === "ready") return;
 
     const attemptId = ++preloadAttemptId;
@@ -290,7 +297,7 @@ async function handleGenerateTask(task) {
         }
     }
 
-    if (preloadTabId) {
+    if (ENABLE_PRELOAD && preloadTabId) {
         console.log(`🧹 [Task: ${taskId}] 当前任务不复用预加载页，先关闭预加载 Tab`);
         clearPreloadTab();
     }
