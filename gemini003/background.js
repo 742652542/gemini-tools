@@ -17,9 +17,11 @@ let preloadLoadListener = null;
 let preloadPrepareTimer = null;
 let preloadAttemptId = 0;
 let preloadPrepareStarted = false;
-const ENABLE_PRELOAD = false;
+const ENABLE_PRELOAD = true;
 const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
+const CONVERSATION_LOST_ERROR = "对话窗口丢失了。";
+const MAX_CONVERSATION_LOST_RETRY = 1;
 const GEMINI_USAGE_URL = "https://gemini.google.com/usage";
 const GEMINI_USAGE_POST_URL = "https://ixspy.com/api/gemini/receive-line-info";
 const GEMINI_USAGE_INTERVAL_MS = 10 * 60 * 1000;
@@ -504,6 +506,38 @@ function clearTaskRuntime(taskId) {
     return taskData;
 }
 
+function retryTaskAfterConversationLost(taskId) {
+    const taskData = taskRegistry.get(taskId);
+    if (!taskData || !taskData.original_task) return false;
+
+    const currentRetryCount = Number(taskData.retry_count || 0);
+    if (currentRetryCount >= MAX_CONVERSATION_LOST_RETRY) {
+        return false;
+    }
+
+    const retryTask = {
+        ...taskData.original_task,
+        _conversationLostRetryCount: currentRetryCount + 1
+    };
+    const tabId = taskData.tab_id;
+
+    console.warn(`↩️ [Task: ${taskId}] 检测到"${CONVERSATION_LOST_ERROR}"，关闭当前窗口后立即重试 (${currentRetryCount + 1}/${MAX_CONVERSATION_LOST_RETRY})`);
+
+    clearTaskRuntime(taskId);
+
+    if (tabId) {
+        chrome.tabs.remove(tabId, () => {
+            if (chrome.runtime.lastError) {}
+        });
+    }
+
+    setTimeout(() => {
+        handleGenerateTask(retryTask);
+    }, 0);
+
+    return true;
+}
+
 function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadReuse = false) {
     const taskId = task.task_id;
     const taskSource = task.source === "chatgpt" ? "chatgpt" : "gemini";
@@ -521,6 +555,8 @@ function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadRe
         tab_id: tabId,
         task_action: task.action,
         task_source: taskSource,
+        original_task: task,
+        retry_count: Number(task._conversationLostRetryCount || 0),
         download_timer: null,
         is_waiting_download: true,
         timeout_id: timeoutId
@@ -706,9 +742,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return;
         }
 
-       
+        
 
         if (error) {
+            if (error === CONVERSATION_LOST_ERROR && retryTaskAfterConversationLost(task_id)) {
+                sendResponse({ success: true });
+                return;
+            }
+
             console.log(`❌ 任务 [${task_id}] 执行出错了，全部流程结束，回传 Python`);
             const payload = {
                 status: "error",

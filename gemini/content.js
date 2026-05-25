@@ -441,8 +441,8 @@ async function getLatestReplyImages(task_id) {
     if (responseBlocks.length === 0){
         const container = document.querySelectorAll("response-container");
         if (container.length === 0) {
-            console.log("触发限制，请检查提示词");
-            return { status: 'error', data: 'show-触发限制，请检查提示词' };
+            console.log("对话窗口丢失了。");
+            return { status: 'error', data: '对话窗口丢失了。' };
         }
         console.log("未找到回答");
         return { status: 'error', data: '未找到回答' };
