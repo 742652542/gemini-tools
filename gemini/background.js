@@ -20,6 +20,11 @@ let preloadPrepareStarted = false;
 const ENABLE_PRELOAD = false;
 const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
+const GEMINI_USAGE_URL = "https://gemini.google.com/usage";
+const GEMINI_USAGE_POST_URL = "https://ixspy.com/api/gemini/receive-line-info";
+const GEMINI_USAGE_INTERVAL_MS = 10 * 60 * 1000;
+const GEMINI_USAGE_PAGE_TIMEOUT = 30000;
+const GEMINI_USAGE_MESSAGE_TIMEOUT = 20000;
 
 // --- 核心：任务生命周期注册表 ---
 // Key: task_id (String)
@@ -40,6 +45,167 @@ const pendingRequests = new Map();
 
 // 用于标记当前正在尝试发起下载的任务
 let currentPendingDownloadTask = null;
+let usagePollingTimer = null;
+let usageCollectionInProgress = false;
+let usageTabId = null;
+let usageLoadListener = null;
+let usageTimeoutId = null;
+
+function clearUsageRuntime() {
+    if (usageLoadListener) {
+        chrome.tabs.onUpdated.removeListener(usageLoadListener);
+        usageLoadListener = null;
+    }
+
+    if (usageTimeoutId) {
+        clearTimeout(usageTimeoutId);
+        usageTimeoutId = null;
+    }
+}
+
+function cleanupUsageCollection() {
+    const tabId = usageTabId;
+    console.log(`[Usage] 清理本轮状态, tabId=${tabId || "none"}`);
+    clearUsageRuntime();
+    usageCollectionInProgress = false;
+    usageTabId = null;
+
+    if (tabId) {
+        chrome.tabs.remove(tabId, () => {
+            if (chrome.runtime.lastError) {}
+        });
+    }
+}
+
+async function postUsageSnapshot(snapshot) {
+    console.log("[Usage] 准备推送 usage 数据:", snapshot);
+    await fetch(GEMINI_USAGE_POST_URL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            ...snapshot,
+            clientId: CLIENT_ID
+        })
+    });
+    console.log("[Usage] usage 数据推送完成");
+}
+
+function requestUsageSnapshot(tabId) {
+    return new Promise((resolve, reject) => {
+        console.log(`[Usage] 向 tab ${tabId} 请求页面采集`);
+        const timer = setTimeout(() => {
+            reject(new Error("Usage snapshot request timed out"));
+        }, GEMINI_USAGE_MESSAGE_TIMEOUT);
+
+        chrome.tabs.sendMessage(tabId, { action: "collect_usage_snapshot" }).then((response) => {
+            clearTimeout(timer);
+            if (!response || response.success !== true || !response.data) {
+                const detail = response ? JSON.stringify(response) : "no response payload";
+                reject(new Error(`Usage snapshot collection failed: ${detail}`));
+                return;
+            }
+
+            resolve(response.data);
+        }).catch((error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+
+async function collectUsageFromTab(tabId) {
+    try {
+        console.log(`[Usage] 开始从 tab ${tabId} 采集 usage`);
+        const snapshot = await requestUsageSnapshot(tabId);
+        console.log("[Usage] 页面采集成功:", snapshot);
+        console.log("[Usage] 页面采集结果(JSON):", JSON.stringify(snapshot));
+        await postUsageSnapshot(snapshot);
+    } catch (error) {
+        console.warn("[Usage] 本轮采集或推送失败，等待下一轮:", error);
+    } finally {
+        cleanupUsageCollection();
+    }
+}
+
+function openUsageTabAndCollect() {
+    usageCollectionInProgress = true;
+    console.log("[Usage] 当前空闲，准备打开 usage 页面");
+
+    chrome.tabs.create({ url: GEMINI_USAGE_URL, active: false }, (newTab) => {
+        if (chrome.runtime.lastError || !newTab || !newTab.id) {
+            console.warn("[Usage] usage 页面打开失败", chrome.runtime.lastError);
+            cleanupUsageCollection();
+            return;
+        }
+
+        const tabId = newTab.id;
+        let hasCollected = false;
+        usageTabId = tabId;
+        console.log(`[Usage] usage 页面已打开, tabId=${tabId}`);
+        usageTimeoutId = setTimeout(() => {
+            console.warn(`[Usage] usage 页面等待超时, tabId=${tabId}`);
+            cleanupUsageCollection();
+        }, GEMINI_USAGE_PAGE_TIMEOUT);
+
+        const collectOnce = () => {
+            if (hasCollected) return;
+            hasCollected = true;
+            collectUsageFromTab(tabId);
+        };
+
+        const onUsageTabReady = (updatedTabId, changeInfo) => {
+            if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
+            console.log(`[Usage] usage 页面加载完成, tabId=${tabId}`);
+
+            if (usageLoadListener === onUsageTabReady) {
+                chrome.tabs.onUpdated.removeListener(onUsageTabReady);
+                usageLoadListener = null;
+            }
+
+            collectOnce();
+        };
+
+        usageLoadListener = onUsageTabReady;
+        chrome.tabs.onUpdated.addListener(onUsageTabReady);
+
+        chrome.tabs.get(tabId, (tab) => {
+            if (chrome.runtime.lastError || !tab || tab.id !== tabId) return;
+            if (tab.status === "complete") {
+                if (usageLoadListener === onUsageTabReady) {
+                    chrome.tabs.onUpdated.removeListener(onUsageTabReady);
+                    usageLoadListener = null;
+                }
+                collectOnce();
+            }
+        });
+    });
+}
+
+function runUsageCollection() {
+    console.log(`[Usage] 触发轮询检查, inProgress=${usageCollectionInProgress}, taskCount=${taskRegistry.size}`);
+    if (usageCollectionInProgress) {
+        console.log("[Usage] 已有采集进行中，跳过本轮");
+        return;
+    }
+    if (taskRegistry.size > 0) {
+        console.log("[Usage] 当前有任务执行中，跳过本轮");
+        return;
+    }
+
+    openUsageTabAndCollect();
+}
+
+function startUsagePolling() {
+    if (usagePollingTimer) {
+        clearInterval(usagePollingTimer);
+    }
+
+    console.log("[Usage] 启动 usage 轮询：立即执行一次，之后每 10 分钟一次");
+    runUsageCollection();
+    usagePollingTimer = setInterval(runUsageCollection, GEMINI_USAGE_INTERVAL_MS);
+}
 
 function isGeminiImageTask(task) {
     return task && task.action === "generate_image" && (task.source || "gemini") !== "chatgpt";
@@ -275,6 +441,7 @@ function cleanupConnection() {
 setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
 
 connectWebSocket();
+startUsagePolling();
 
 
 // ==========================================
@@ -624,6 +791,12 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (isManagedPreloadTab(tabId)) {
         clearPreloadState();
         schedulePreloadRestore(3000);
+    }
+
+    if (usageTabId && tabId === usageTabId) {
+        clearUsageRuntime();
+        usageCollectionInProgress = false;
+        usageTabId = null;
     }
 });
 

@@ -12,6 +12,7 @@
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
+    "https://ixspy.com/*",
     "*://*.googleusercontent.com/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -25,6 +26,11 @@
     {
       "matches": ["https://gemini.google.com/*"],
       "js": ["content.js"]
+    },
+    {
+      "matches": ["https://gemini.google.com/usage*"],
+      "js": ["usage_monitor.js"],
+      "run_at": "document_idle"
     },
     {
       "matches": ["*://*.googleusercontent.com/*"],
