@@ -156,16 +156,16 @@ function findTier(text) {
 
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
-        const directMatch = line.match(/\b(PRO|ULTRA|FREE|ADVANCED)\b/i);
+        const directMatch = line.match(/\b(AI\s*PLUS|PLUS|PRO|ULTRA|FREE|ADVANCED)\b/i);
         if (directMatch) {
-            return directMatch[1].toUpperCase();
+            return directMatch[1].replace(/\s+/g, " ").toUpperCase();
         }
 
         if (/tier|plan|subscription|方案|订阅|等级/i.test(line)) {
             for (let cursor = index; cursor < Math.min(lines.length, index + 4); cursor += 1) {
-                const tierMatch = lines[cursor].match(/\b(PRO|ULTRA|FREE|ADVANCED)\b/i);
+                const tierMatch = lines[cursor].match(/\b(AI\s*PLUS|PLUS|PRO|ULTRA|FREE|ADVANCED)\b/i);
                 if (tierMatch) {
-                    return tierMatch[1].toUpperCase();
+                    return tierMatch[1].replace(/\s+/g, " ").toUpperCase();
                 }
             }
         }
@@ -175,7 +175,7 @@ function findTier(text) {
 }
 
 function extractUsageSnapshot() {
-    if (!window.location.pathname.startsWith(USAGE_REQUIRED_PATH)) {
+    if (!window.location.pathname.includes(USAGE_REQUIRED_PATH)) {
         return null;
     }
 
@@ -197,6 +197,8 @@ function extractUsageSnapshot() {
         const currentResetText = firstMatch(currentCardText, /(重置时间[:：]\s*(?:\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\d{1,2}:\d{2}))/);
         const weeklyResetText = firstMatch(weeklyCardText, /(重置时间[:：]\s*(?:\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\d{1,2}:\d{2}))/);
 
+        const normalizedTier = normalizeWhitespace(tierText).toUpperCase() || findTier(getTextContent(usageRoot)) || "UNKNOWN";
+
         const snapshot = {
             current: {
                 usedText: currentUsedText,
@@ -207,10 +209,10 @@ function extractUsageSnapshot() {
                 resetTime: getResetTimestampFromText(weeklyResetText)
             },
             updatedAtText,
-            tier: tierText.toUpperCase()
+            tier: normalizedTier
         };
 
-        if (snapshot.current.usedText && snapshot.current.resetTime && snapshot.weekly.usedText && snapshot.weekly.resetTime && snapshot.updatedAtText && snapshot.tier) {
+        if (snapshot.current.usedText && snapshot.weekly.usedText) {
             console.log("[Gemini Usage] 通过精确选择器提取成功", snapshot);
             console.log("[Gemini Usage] 提取结果(JSON)", JSON.stringify(snapshot));
             return snapshot;
@@ -247,7 +249,7 @@ function extractUsageSnapshot() {
         tier: findTier(pageText)
     };
 
-    if (!snapshot.current.usedText || !snapshot.current.resetTime || !snapshot.weekly.usedText || !snapshot.weekly.resetTime || !snapshot.updatedAtText || !snapshot.tier) {
+    if (!snapshot.current.usedText || !snapshot.weekly.usedText) {
         console.warn("[Gemini Usage] 文本兜底提取失败");
         return null;
     }
