@@ -11,7 +11,7 @@ TARGET_DIRECTORIES = [
     Path(r"C:\Users\Administrator\Desktop\tools\gemini-tools\task_files"),
     Path(r"C:\Users\Administrator\Downloads"),
 ]
-DEFAULT_RETENTION_DAYS = 3
+DEFAULT_RETENTION_DAYS = 2
 
 
 @dataclass
