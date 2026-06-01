@@ -22,6 +22,11 @@ const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
 const CONVERSATION_LOST_ERROR = "对话窗口丢失了。";
 const MAX_CONVERSATION_LOST_RETRY = 1;
+const CHATGPT_RETRYABLE_ERRORS = [
+    "提示词限制或者触发品牌保护。",
+    "找不到可点击的发送按钮",
+    "找不到 ChatGPT 输入框"
+];
 const GEMINI_USAGE_URL = "https://gemini.google.com/usage";
 const GEMINI_USAGE_POST_URL = "https://ixspy.com/api/gemini/receive-line-info";
 const GEMINI_USAGE_INTERVAL_MS = 10 * 60 * 1000;
@@ -506,9 +511,32 @@ function clearTaskRuntime(taskId) {
     return taskData;
 }
 
-function retryTaskAfterConversationLost(taskId) {
+function getRetryableTaskError(taskData, error) {
+    if (!taskData || !error) return null;
+
+    if (error === CONVERSATION_LOST_ERROR) {
+        return CONVERSATION_LOST_ERROR;
+    }
+
+    if (taskData.task_source !== "chatgpt") {
+        return null;
+    }
+
+    for (const retryableError of CHATGPT_RETRYABLE_ERRORS) {
+        if (error === retryableError || error === `show-${retryableError}`) {
+            return retryableError;
+        }
+    }
+
+    return null;
+}
+
+function retryTaskAfterRecoverableError(taskId, error) {
     const taskData = taskRegistry.get(taskId);
     if (!taskData || !taskData.original_task) return false;
+
+    const retryableError = getRetryableTaskError(taskData, error);
+    if (!retryableError) return false;
 
     const currentRetryCount = Number(taskData.retry_count || 0);
     if (currentRetryCount >= MAX_CONVERSATION_LOST_RETRY) {
@@ -521,7 +549,7 @@ function retryTaskAfterConversationLost(taskId) {
     };
     const tabId = taskData.tab_id;
 
-    console.warn(`↩️ [Task: ${taskId}] 检测到"${CONVERSATION_LOST_ERROR}"，关闭当前窗口后立即重试 (${currentRetryCount + 1}/${MAX_CONVERSATION_LOST_RETRY})`);
+    console.warn(`↩️ [Task: ${taskId}] 检测到可重试错误"${retryableError}"，关闭当前窗口后立即重试 (${currentRetryCount + 1}/${MAX_CONVERSATION_LOST_RETRY})`);
 
     clearTaskRuntime(taskId);
 
@@ -745,7 +773,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         
 
         if (error) {
-            if (error === CONVERSATION_LOST_ERROR && retryTaskAfterConversationLost(task_id)) {
+            if (retryTaskAfterRecoverableError(task_id, error)) {
                 sendResponse({ success: true });
                 return;
             }
