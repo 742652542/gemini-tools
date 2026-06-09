@@ -70,7 +70,7 @@ def _file_sha256(file_path: str) -> str:
     return digest.hexdigest()
 
 def process_gemini_watermark(image_path: str) -> bool:
-    """Try legacy watermark removal first, then retry with the default profile."""
+    """Try legacy watermark removal first, then default profile, then force mode."""
     original_data = None
     try:
         with open(image_path, "rb") as f:
@@ -80,10 +80,11 @@ def process_gemini_watermark(image_path: str) -> bool:
         attempts = [
             ("legacy", ["GeminiWatermarkTool", "--legacy", "--no-banner", "-i", image_path, "-o", image_path]),
             ("default", ["GeminiWatermarkTool", "--no-banner", image_path]),
+            ("force", ["GeminiWatermarkTool", "--no-banner", "--force", "-i", image_path, "-o", image_path]),
         ]
 
         for profile, command in attempts:
-            if profile == "default":
+            if profile != "legacy":
                 with open(image_path, "wb") as f:
                     f.write(original_data)
 
