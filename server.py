@@ -77,11 +77,15 @@ def process_gemini_watermark(image_path: str) -> bool:
             original_data = f.read()
         original_hash = hashlib.sha256(original_data).hexdigest()
 
+        # attempts = [
+        #     ("legacy", ["GeminiWatermarkTool", "--legacy", "--no-banner", "-i", image_path, "-o", image_path]),
+        #     ("default", ["GeminiWatermarkTool", "--no-banner", image_path]),
+        #     ("force", ["GeminiWatermarkTool", "--no-banner", "--force", "-i", image_path, "-o", image_path]),
+        # ]
         attempts = [
-            ("legacy", ["GeminiWatermarkTool", "--legacy", "--no-banner", "-i", image_path, "-o", image_path]),
-            ("default", ["GeminiWatermarkTool", "--no-banner", image_path]),
-            ("force", ["GeminiWatermarkTool", "--no-banner", "--force", "-i", image_path, "-o", image_path]),
+            ("default", ["GeminiWatermarkToolPython", "--no-banner", image_path])
         ]
+
 
         for profile, command in attempts:
             if profile != "legacy":
