@@ -161,9 +161,15 @@ function waitForReplyComplete(timeoutMs = 240000) {
             const sendBtn = document.querySelector('button[aria-label="Send"]') || 
                             document.querySelector('button[aria-label="发送"]');
 
-            // 逻辑：停止按钮不存在 + 发送按钮存在 = 空闲/完成
+            // 查找"语音/麦克风"按钮
+            const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
+                           document.querySelector('button[aria-label="Microphone"]') ||
+                           document.querySelector('button[aria-label="使用麦克风"]') ||
+                           document.querySelector('button[aria-label="Use microphone"]');
+
+            // 逻辑：停止按钮不存在 + 发送按钮存在/语音按钮存在 = 空闲/完成
             // 且必须确保距离开始监听已经过了一小段时间(防止刚点击发送还没来得及变状态)
-            if (!stopBtn && sendBtn && (Date.now() - startTime > 1000)) {
+            if (!stopBtn && (sendBtn || micBtn) && (Date.now() - startTime > 1000)) {
                 const responses = document.querySelectorAll('message-content');
                 if (responses.length > 0) {
                     observer.disconnect();
