@@ -86,14 +86,16 @@ def process_gemini_watermark(image_path: str) -> bool:
             ("default", ["GeminiWatermarkToolPython", "--no-banner", image_path])
         ]
 
-
         for profile, command in attempts:
             if profile != "legacy":
                 with open(image_path, "wb") as f:
                     f.write(original_data)
 
             try:
-                result = subprocess.run(command, check=False)
+                result = subprocess.run(command, check=False, timeout=10)
+            except subprocess.TimeoutExpired:
+                print(f"GeminiWatermarkTool timeout ({profile}) after 10s: {image_path}")
+                result = None
             except Exception as e:
                 print(f"Failed to execute GeminiWatermarkTool ({profile}): {e}")
                 result = None
