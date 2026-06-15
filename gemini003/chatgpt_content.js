@@ -636,7 +636,7 @@ async function getLatestReplyImages() {
     return { status: 'error', data: '未找到 assistant 回复区块' };
   }
 
-  const materialized = await waitForReplyImagesMaterialized(latestTurn, 120000);
+  const materialized = await waitForReplyImagesMaterialized(latestTurn, 180000);
   if (materialized.status !== 'success') {
     console.warn('⚠️ [图片提取] 图片落地失败，准备按分支返回错误:', materialized.data);
     if (hasImageTransitionSurface(latestTurn)) {
