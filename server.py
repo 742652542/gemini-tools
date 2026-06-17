@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import base64
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Dict, Optional
 import uvicorn
 import json
@@ -24,19 +25,99 @@ from fastapi.requests import Request
 # pip install fastapi uvicorn pydantic httpx boto3
 # pip install "uvicorn[standard]" fastapi
 
-# Load S3 configuration
-try:
-    with open('config.json') as f:
-        config = json.load(f)
-    s3_config = config.get('s3', {})
-    S3_ACCESS_KEY_ID = s3_config.get('access_key_id')
-    S3_SECRET_ACCESS_KEY = s3_config.get('secret_access_key')
-    S3_ENDPOINT_URL = s3_config.get('endpoint_url')
-    S3_BUCKET_NAME = s3_config.get('bucket_name')
-except (FileNotFoundError, json.JSONDecodeError) as e:
-    print(f"Error loading S3 configuration: {e}")
-    # Set to None so we can handle it gracefully
-    S3_ACCESS_KEY_ID = S3_SECRET_ACCESS_KEY = S3_ENDPOINT_URL = S3_BUCKET_NAME = None
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+
+def load_app_config(config_path: Optional[str] = None) -> dict:
+    target_path = config_path or CONFIG_PATH
+    try:
+        with open(target_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading app configuration: {e}")
+        return {}
+
+
+def build_public_url(object_name: str, s3_config: Optional[dict] = None) -> Optional[str]:
+    target_s3_config = s3_config or APP_CONFIG.get("s3", {})
+    public_base_url = target_s3_config.get("public_base_url")
+    if not public_base_url:
+        return None
+    return f"{public_base_url.rstrip('/')}/{object_name.lstrip('/')}"
+
+
+APP_CONFIG = load_app_config()
+s3_config = APP_CONFIG.get('s3', {})
+
+
+def get_s3_provider_configs(app_config: Optional[dict] = None) -> list[dict]:
+    target_app_config = app_config or APP_CONFIG
+    target_s3_config = target_app_config.get("s3", {})
+    providers = target_s3_config.get("providers")
+    if isinstance(providers, list) and providers:
+        return providers
+    if target_s3_config.get("endpoint_url"):
+        return [target_s3_config]
+    return []
+
+
+def get_upload_timeout_seconds(app_config: Optional[dict] = None, action: str = "generate_image") -> int:
+    target_app_config = app_config or APP_CONFIG
+    target_s3_config = target_app_config.get("s3", {})
+    if action == "generate_video":
+        return int(target_s3_config.get("video_upload_timeout_seconds", 120) or 120)
+    return int(target_s3_config.get("upload_timeout_seconds", 30) or 30)
+
+
+def is_aliyun_oss_endpoint(endpoint_url: Optional[str]) -> bool:
+    return bool(endpoint_url and "aliyuncs.com" in endpoint_url)
+
+
+def get_s3_client_options(s3_settings: Optional[dict] = None, timeout_seconds: int = 30) -> dict:
+    target_s3_config = s3_settings or s3_config
+    endpoint_url = target_s3_config.get("endpoint_url")
+
+    if is_aliyun_oss_endpoint(endpoint_url):
+        return {
+            "region_name": "cn-hangzhou",
+            "verify": False,
+            "config": Config(
+                s3={"addressing_style": "virtual"},
+                request_checksum_calculation="when_required",
+                connect_timeout=timeout_seconds,
+                read_timeout=timeout_seconds,
+            ),
+        }
+
+    return {
+        "region_name": "ap-southeast-1",
+        "verify": False,
+        "config": Config(
+            s3={"addressing_style": "path"},
+            connect_timeout=timeout_seconds,
+            read_timeout=timeout_seconds,
+        ),
+    }
+
+
+def create_s3_client(provider: dict, timeout_seconds: int):
+    client_options = get_s3_client_options(provider, timeout_seconds)
+    return boto3.client(
+        's3',
+        aws_access_key_id=provider.get('access_key_id'),
+        aws_secret_access_key=provider.get('secret_access_key'),
+        endpoint_url=provider.get('endpoint_url'),
+        region_name=client_options['region_name'],
+        verify=client_options['verify'],
+        config=client_options['config']
+    )
+
+
+def upload_file_with_timeout(s3_client, file_path: str, bucket_name: str, object_name: str, timeout_seconds: int):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(s3_client.upload_file, file_path, bucket_name, object_name)
+        future.result(timeout=timeout_seconds)
 
 app = FastAPI()
 DEBUG = False
@@ -169,30 +250,40 @@ def get_image_extension(image_data: bytes) -> str:
         return '.webp'
     return '.png'  # 默认降级为 png
 
-def upload_to_s3(file_path: str, object_name: str) -> Optional[str]:
+def upload_to_s3(file_path: str, object_name: str, action: str = "generate_image") -> Optional[str]:
     """Upload a file to an S3 bucket and return the public URL."""
-    if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL, S3_BUCKET_NAME]):
+    providers = get_s3_provider_configs()
+    if not providers:
         print("S3 credentials are not configured. Skipping upload.")
         return None
+    timeout_seconds = get_upload_timeout_seconds(action=action)
 
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=S3_ACCESS_KEY_ID,
-        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-        endpoint_url=S3_ENDPOINT_URL,
-        region_name='ap-southeast-1',
-        verify=False, 
-        config=Config(s3={'addressing_style': 'path'})
-    )
-    try:
-        s3_client.upload_file(file_path, S3_BUCKET_NAME, object_name)
-        # Construct the public URL
-        public_url = f"https://d.ixspy.cn/{object_name}"
-        print(f"Successfully uploaded {object_name} to {public_url}")
-        return public_url
-    except Exception as e:
-        print(f"Error uploading to S3: {e}")
-        return None
+    for provider in providers:
+        provider_name = provider.get("name") or provider.get("endpoint_url") or "unknown"
+        if not all([
+            provider.get('access_key_id'),
+            provider.get('secret_access_key'),
+            provider.get('endpoint_url'),
+            provider.get('bucket_name'),
+        ]):
+            print(f"Skipping incomplete S3 provider config: {provider_name}")
+            continue
+
+        try:
+            s3_client = create_s3_client(provider, timeout_seconds)
+            upload_file_with_timeout(s3_client, file_path, provider['bucket_name'], object_name, timeout_seconds)
+            public_url = build_public_url(object_name, provider)
+            if not public_url:
+                print(f"S3 public_base_url is not configured for provider: {provider_name}")
+                return None
+            print(f"Successfully uploaded {object_name} via {provider_name} to {public_url}")
+            return public_url
+        except FutureTimeoutError:
+            print(f"Upload timed out after {timeout_seconds}s via {provider_name}, trying next provider if available.")
+        except Exception as e:
+            print(f"Error uploading to S3 via {provider_name}: {e}")
+
+    return None
 
 # === 连接与状态管理器 ===
 class ConnectionManager:
@@ -357,6 +448,16 @@ async def push_result_to_ixspy(task_id: str, result_data: dict):
         print(f"Unknown error during push (Task ID: {task_id}): {e}")
 
 
+async def persist_task_result_in_background(task_id: str, client_id: str, data: dict):
+    if await asyncio.to_thread(save_task_result, task_id, client_id, data):
+        await push_result_to_ixspy(task_id, data)
+
+
+async def persist_task_file_in_background(task_id: str, data: dict):
+    if await asyncio.to_thread(save_task_file, task_id, data):
+        await push_result_to_ixspy(task_id, data)
+
+
 # === [修改] 辅助函数：按日期保存结果 ===
 def save_task_result(task_id: str, client_id: str, data: dict):
     # 获取任务 action
@@ -381,6 +482,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
 
             for idx, img_b64 in enumerate(raw_images):
                 temp_file_path = None
+                original_img_b64 = img_b64
                 try:
                     # A. Base64 解码
                     if "," in img_b64:
@@ -401,14 +503,16 @@ def save_task_result(task_id: str, client_id: str, data: dict):
                     
                     # C. 上传到 S3
                     object_name = f"ai/img/task_results/{date_folder}/{task_id+str(datetime.now().timestamp())}{ext}"
-                    cdn_url = upload_to_s3(temp_file_path, object_name)
+                    cdn_url = upload_to_s3(temp_file_path, object_name, action="generate_image")
                     if cdn_url:
                         cdn_urls.append(cdn_url)
                         print(f"Image {task_id+str(idx)} processed and uploaded successfully.")
                     else:
+                        cdn_urls.append(original_img_b64)
                         print(f"Image {task_id+str(idx)} processed but upload failed.")
 
                 except Exception as e:
+                    cdn_urls.append(original_img_b64)
                     print(f"Image {task_id+str(idx)} processing/upload exception: {e}")
                 finally:
                     if temp_file_path and os.path.exists(temp_file_path):
@@ -429,9 +533,6 @@ def save_task_result(task_id: str, client_id: str, data: dict):
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         print(f"Task result saved: {file_path}")
-        
-        # 异步推送结果
-        asyncio.create_task(push_result_to_ixspy(task_id, data))
         
         return True
     except Exception as e:
@@ -466,7 +567,7 @@ def save_task_file(task_id: str, data: dict):
                 print(f"Failed to execute GeminiWatermarkTool-Video.exe: {e}")
         
         object_name = f"ai/img/task_results/{date_folder}/{task_id}{str(datetime.now().timestamp())}{file_extension}"        
-        cdn_url = upload_to_s3(image_disk_path, object_name)
+        cdn_url = upload_to_s3(image_disk_path, object_name, action=action)
 
     # 更新或创建要保存的 result_data
     result_data = data
@@ -484,8 +585,6 @@ def save_task_file(task_id: str, data: dict):
             json.dump(result_data, f, ensure_ascii=False, indent=2)
         print(f"Task file metadata saved: {file_path}")
         
-        # 异步推送包含 cdn_url 的结果
-        asyncio.create_task(push_result_to_ixspy(task_id, result_data))
         return True
     except Exception as e:
         print(f"Failed to save file metadata: {e}")
@@ -512,7 +611,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     task_id = response.get("task_id", "Unknown")
                     # 这里假设客户端发回的 file_path 是文件名或相对路径
                     # 如果需要保存详细信息，可以直接保存整个 response
-                    save_task_file(task_id, response)     
+                    asyncio.create_task(persist_task_file_in_background(task_id, response))
                     continue 
                       
                 # 任务完成通知 -> 保存到 task_results/日期/xxx.json
@@ -520,8 +619,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 if status in ["success", "error"]:
                     task_id = response.get("task_id", "Unknown")
                     print(f"[{client_id}] Task completed: {task_id} (Status: {status})")
-                    
-                    save_task_result(task_id, client_id, response)
+                    asyncio.create_task(persist_task_result_in_background(task_id, client_id, response))
                     
                     manager.mark_idle(client_id)
                     await check_and_dispatch_task(client_id)

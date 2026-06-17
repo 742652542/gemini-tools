@@ -414,7 +414,7 @@ function getReplyBlockImages(block) {
     });
 }
 
-async function findLatestUsableReplyBlock(timeoutMs = 30000) {
+async function findLatestUsableReplyBlock(timeoutMs = 60000) {
     const startTime = Date.now();
     let latestNonEmptyBlock = null;
 
@@ -434,7 +434,7 @@ async function findLatestUsableReplyBlock(timeoutMs = 30000) {
             }
         }
 
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
     }
 
     return latestNonEmptyBlock;
