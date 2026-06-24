@@ -31,7 +31,7 @@ function waitForUploadSuccess(timeoutMs = 600000) {
         const timer = setTimeout(() => {
             window.removeEventListener('GEMINI_UPLOAD_COMPLETE', handler);
             console.warn("⚠️ 等待上传超时 (可能这次没发图片，或网络太慢)");
-            resolve(false); 
+            resolve(false);
         }, timeoutMs);
     });
 }
@@ -52,7 +52,7 @@ function inspectVideoState(startTime) {
     const textContent = rawText.toLowerCase().trim();
 
     const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
-                        lastBlock.querySelector('button[aria-label="Download video"]');
+        lastBlock.querySelector('button[aria-label="Download video"]');
     const videoEl = lastBlock.querySelector('video');
 
     if (downloadBtn || videoEl) {
@@ -60,7 +60,7 @@ function inspectVideoState(startTime) {
     }
 
     const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
-                    document.querySelector('button[aria-label="停止生成"]');
+        document.querySelector('button[aria-label="停止生成"]');
 
     const isGenerating = stopBtn ||
         textContent.includes("正在生成视频") ||
@@ -73,12 +73,16 @@ function inspectVideoState(startTime) {
     }
 
     const sendBtn = document.querySelector('button[aria-label="Send"]') ||
-                    document.querySelector('button[aria-label="发送"]');
+        document.querySelector('button[aria-label="发送"]');
+    const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
+        document.querySelector('button[aria-label="Microphone"]') ||
+        document.querySelector('button[aria-label="使用麦克风"]') ||
+        document.querySelector('button[aria-label="Use microphone"]');
 
     const hasFinalText = rawText.trim().length > 0;
     const enoughTimePassed = Date.now() - startTime > 3000;
 
-    if (hasFinalText && sendBtn && enoughTimePassed) {
+    if (hasFinalText && (sendBtn || micBtn) && enoughTimePassed) {
         return { status: 'error', data: rawText };
     }
 
@@ -148,24 +152,24 @@ function waitForVideoReady(timeoutMs = 900000) { // 默认 15 分钟
 function waitForReplyComplete(timeoutMs = 240000) {
     return new Promise((resolve) => {
         console.log("⏳ [3/5] 监听回答生成中...");
-        
+
         // 标记开始时间
         const startTime = Date.now();
 
         const observer = new MutationObserver(() => {
             // 查找"停止"按钮 (覆盖中英文)
-            const stopBtn = document.querySelector('button[aria-label="Stop generating"]') || 
-                            document.querySelector('button[aria-label="停止生成"]');
-            
+            const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
+                document.querySelector('button[aria-label="停止生成"]');
+
             // 查找"发送"按钮
-            const sendBtn = document.querySelector('button[aria-label="Send"]') || 
-                            document.querySelector('button[aria-label="发送"]');
+            const sendBtn = document.querySelector('button[aria-label="Send"]') ||
+                document.querySelector('button[aria-label="发送"]');
 
             // 查找"语音/麦克风"按钮
             const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
-                           document.querySelector('button[aria-label="Microphone"]') ||
-                           document.querySelector('button[aria-label="使用麦克风"]') ||
-                           document.querySelector('button[aria-label="Use microphone"]');
+                document.querySelector('button[aria-label="Microphone"]') ||
+                document.querySelector('button[aria-label="使用麦克风"]') ||
+                document.querySelector('button[aria-label="Use microphone"]');
 
             // 逻辑：停止按钮不存在 + 发送按钮存在/语音按钮存在 = 空闲/完成
             // 且必须确保距离开始监听已经过了一小段时间(防止刚点击发送还没来得及变状态)
@@ -243,8 +247,8 @@ function convertImgToCanvasBase64(url) {
         const img = new Image();
         // 关键1：开启跨域匿名模式。Google 图片服务器允许匿名访问，且 header 为 *
         // 这样设置后，Canvas 就不会被污染（Tainted）
-        img.crossOrigin = "anonymous"; 
-        
+        img.crossOrigin = "anonymous";
+
         img.onload = () => {
             try {
                 const canvas = document.createElement('canvas');
@@ -268,7 +272,7 @@ function convertImgToCanvasBase64(url) {
 
         // 关键2：赋值 URL 触发加载 (通常会命中浏览器缓存)
         img.src = url;
-        
+
         // 超时保护
         setTimeout(() => resolve(null), 3000);
     });
@@ -309,29 +313,29 @@ async function imageUrlToBase64(url) {
 
             // 发送给 Background，让它去开 Tab
             chrome.runtime.sendMessage(
-            {
-                action: "downloadImageViaTab",
-                url: url,
-            },
-            (response) => {
-                // 错误处理
-                if (chrome.runtime.lastError) {
-                console.warn("通信错误:", chrome.runtime.lastError.message);
-                resolve(null);
-                return;
-                }
+                {
+                    action: "downloadImageViaTab",
+                    url: url,
+                },
+                (response) => {
+                    // 错误处理
+                    if (chrome.runtime.lastError) {
+                        console.warn("通信错误:", chrome.runtime.lastError.message);
+                        resolve(null);
+                        return;
+                    }
 
-                if (response && response.success) {
-                console.log("✅ Tab 抓取成功!");
-                resolve(response.data);
-                } else {
-                console.warn(
-                    "❌ Tab 抓取失败:",
-                    response ? response.error : "未知错误"
-                );
-                resolve(null);
+                    if (response && response.success) {
+                        console.log("✅ Tab 抓取成功!");
+                        resolve(response.data);
+                    } else {
+                        console.warn(
+                            "❌ Tab 抓取失败:",
+                            response ? response.error : "未知错误"
+                        );
+                        resolve(null);
+                    }
                 }
-            }
             );
         });
 
@@ -372,11 +376,11 @@ function ensureImageLoaded(img, timeoutMs = 30000) {
                 setTimeout(check, 500); // 每 500ms 轮询一次
             }
         };
-        
+
         // 同时也监听事件作为补充
         img.addEventListener('load', () => { if (img.naturalWidth > 0) resolve(true); }, { once: true });
         img.addEventListener('error', () => resolve(false), { once: true });
-        
+
         check();
     });
 }
@@ -452,14 +456,14 @@ async function getLatestReplyImages(task_id) {
         }
         console.log("未找到回答");
         return { status: 'error', data: '未找到回答' };
-    } 
+    }
 
     const lastBlock = await findLatestUsableReplyBlock();
     if (!lastBlock) {
         console.log("未找到有效回答");
         return { status: 'error', data: '未找到有效回答' };
     }
-    
+
     // 1. 获取图片
     const originalImages = getReplyBlockImages(lastBlock);
     const textContent = lastBlock.textContent ? lastBlock.textContent : "";
@@ -468,10 +472,10 @@ async function getLatestReplyImages(task_id) {
     if (originalImages.length === 0) {
         return { status: 'error', data: 'show-'+textContent };
     }
-    
+
     // 确保图片加载完成（为了获取 naturalWidth/Height）
     await Promise.all(originalImages.map(img => ensureImageLoaded(img)));
-    
+
     // 2. 并发处理图片转换
     // 使用 map 返回 Promise，最后由 Promise.all 统一收集结果
     const processingPromises = originalImages.map(async (img) => {
@@ -480,11 +484,11 @@ async function getLatestReplyImages(task_id) {
 
         // --- 过滤逻辑 (示例) ---
         // if (w < 200 || h < 200) return null; 
-        
+
         const bestUrl = getHighestResUrl(img);
-        
+
         console.log(`⚡ 正在从显存提取图片: ${w}x${h}  ${bestUrl}`);
-        
+
         try {
             // 假设 imageUrlToBase64 是你外部定义的函数
             const base64 = await imageUrlToBase64(bestUrl);
@@ -507,14 +511,14 @@ async function getLatestReplyImages(task_id) {
     if (results.length === 0) {
         return { status: 'error', data: 'show-图片生成失败，请重试。' };
     }else{
-      // 3. 过滤掉失败的(null)或未定义的项，得到纯净的 base64 数组
-      const validBase64Images = results.filter((item) => item);
+        // 3. 过滤掉失败的(null)或未定义的项，得到纯净的 base64 数组
+        const validBase64Images = results.filter((item) => item);
 
-      if (validBase64Images.length === 0) {
-          return { status: 'error', data: 'show-图片已生成，但图片数据提取失败，请重试。' };
-      }
+        if (validBase64Images.length === 0) {
+            return { status: 'error', data: 'show-图片已生成，但图片数据提取失败，请重试。' };
+        }
 
-      return { status: "success", data: validBase64Images,message: 'show-'+textContent };
+        return { status: "success", data: validBase64Images,message: 'show-'+textContent };
     }
 }
 
@@ -526,13 +530,13 @@ async function downloadImage(task_id) {
     if (responseBlocks.length === 0) return "未找到回答";
 
     const lastBlock = responseBlocks[responseBlocks.length - 1];
-    
+
     // 1. 获取原始 DOM 中的图片
     const originalImages = lastBlock.querySelectorAll('img');
-    
+
     if (originalImages.length > 0) {
         console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
-        
+
         // 为了不破坏页面显示，我们操作克隆节点
         const cloneBlock = lastBlock.cloneNode(true);
         const cloneImages = cloneBlock.querySelectorAll('img');
@@ -558,7 +562,7 @@ async function downloadImage(task_id) {
                 break;
             }
         }
-    
+
         if (sendBtn) {
             console.log("🖱️ 找到下载按钮，准备点击...");
 
@@ -578,7 +582,7 @@ async function downloadImage(task_id) {
                         }
                     });
                 });
-                
+
                 await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
 
                 // 2. 触发点击 (这会触发浏览器的下载事件，被 Background 捕获)
@@ -594,11 +598,11 @@ async function downloadImage(task_id) {
             // 建议改为 warn，因为有时候 Gemini 可能没生成完按钮，或者被风控
             console.warn("⚠️ 找不到下载按钮，将使用原始预览图");
         }
-        
+
         // 返回处理过的（包含 Base64 的）HTML
         return cloneBlock.innerHTML;
     }
-    
+
     return lastBlock.innerHTML;
 }
 
@@ -614,20 +618,20 @@ async function downloadVideo(task_id) {
     if (responseBlocks.length === 0) return "未找到回答";
 
     const lastBlock = responseBlocks[responseBlocks.length - 1];
-    
+
     // 查找包含“下载视频”属性的按钮
-    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
-                        lastBlock.querySelector('button[aria-label="Download video"]');
-                        
+    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
+        lastBlock.querySelector('button[aria-label="Download video"]');
+
     if (downloadBtn) {
         console.log("🖱️ 找到'下载视频'按钮，准备触发拦截...");
 
         try {
             const interceptPromise = new Promise((resolve, reject) => {
-                chrome.runtime.sendMessage({ 
+                chrome.runtime.sendMessage({
                     action: "prepare_intercept",
                     task_id: task_id,
-                    task_action: "generate_video" 
+                    task_action: "generate_video"
                 }, (response) => {
                     if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
                     if (response && response.success) {
@@ -637,8 +641,8 @@ async function downloadVideo(task_id) {
                     }
                 });
             });
-            
-            await new Promise(r => setTimeout(r, 1000)); 
+
+            await new Promise(r => setTimeout(r, 1000));
 
             // 触发点击
             downloadBtn.click();
@@ -720,8 +724,8 @@ async function pasteImage(base64Str,name="image1.png") {
     console.log("📋 准备模拟粘贴图片...");
 
     // 尝试重新获取输入框，防止 DOM 刷新导致元素失效
-    const inputBox = document.querySelector('div[contenteditable="true"]') || 
-                     document.querySelector('rich-textarea div[role="textbox"]');
+    const inputBox = document.querySelector('div[contenteditable="true"]') ||
+        document.querySelector('rich-textarea div[role="textbox"]');
 
     if (!inputBox) throw new Error("找不到输入框");
 
@@ -746,7 +750,7 @@ async function pasteImage(base64Str,name="image1.png") {
         cancelable: true,
         clipboardData: dt
     });
-    
+
     inputBox.dispatchEvent(pasteEvent);
     console.log("📋 粘贴事件已触发");
 }
@@ -754,17 +758,17 @@ async function pasteImage(base64Str,name="image1.png") {
 
 async function sendPrompt(text) {
     console.log("📝 输入文字并发送...");
-    const inputBox = document.querySelector('div[contenteditable="true"]') || 
-                     document.querySelector('rich-textarea div[role="textbox"]');
-    
+    const inputBox = document.querySelector('div[contenteditable="true"]') ||
+        document.querySelector('rich-textarea div[role="textbox"]');
+
     inputBox.focus();
-    document.execCommand('insertText', false, text); 
-    
+    document.execCommand('insertText', false, text);
+
     await new Promise(r => setTimeout(r, 500)); // UI 缓冲
 
-    const sendBtn = document.querySelector('button[aria-label="Send"]') || 
-                    document.querySelector('button[aria-label="发送"]');
-    
+    const sendBtn = document.querySelector('button[aria-label="Send"]') ||
+        document.querySelector('button[aria-label="发送"]');
+
     if (sendBtn) {
         sendBtn.click();
         console.log("🚀 发送按钮已点击");
@@ -1071,12 +1075,12 @@ async function selectGeminiModel(action, modelName, options = {}) {
 
 async function createNewChat(action, modelName, targetRatio = "9:16") {
     console.log(`📝 开启新对话 (动作: ${action}, 模型: ${modelName || '默认 Pro'})`);
-    
+
     await new Promise(r => setTimeout(r, 500)); // UI 缓冲
 
-    const sendBtn = document.querySelector('button[aria-label*="New chat"]') || 
-                    document.querySelector('button[aria-label*="发起新对话"]') ||   document.querySelector('a[aria-label*="发起新对话"]');
-    
+    const sendBtn = document.querySelector('button[aria-label*="New chat"]') ||
+        document.querySelector('button[aria-label*="发起新对话"]') ||   document.querySelector('a[aria-label*="发起新对话"]');
+
     if (sendBtn) {
         sendBtn.click();
         console.log("🚀 开启新对话已点击");
@@ -1087,7 +1091,7 @@ async function createNewChat(action, modelName, targetRatio = "9:16") {
         if (action === "generate_video") {
             await selectGeminiVideoAspectRatio(targetRatio || "9:16");
         }
-        
+
     } else {
         throw new Error("找不到开启新对话");
     }
@@ -1123,7 +1127,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
             await createNewChat(action, model, targetRatio);
             await new Promise(r => setTimeout(r, 2000));
         }
-        
+
         // if(!is_continue) {
         //     console.log("1/5 创建新聊天窗口...");
         //     if(log) log.innerText = "1/5 创建新聊天窗口...";
@@ -1133,21 +1137,21 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         //查找 aria-label="同意（关闭对话框并同意免责声明）" 的button 并且点击
 
 
-       
+
         if (image) {
             console.log("一共上传的图片数量: " + image.length + "张");
             for (let i = 0; i < image.length; i++) {
                 console.log("⏳ [2/5] 正在处理第 " + (i + 1) + " 张图片...");
                 if (log) log.innerText = "正在上传第 " + (i + 1) + "/" + image.length + " 张...";
-        
+
                 // 1. 先创建监听 Promise (这步顺序是对的，要在动作发生前监听)
-                const uploadPromise = waitForUploadSuccess(); 
-        
+                const uploadPromise = waitForUploadSuccess();
+
                 // 2. 执行粘贴
                 // 【建议】粘贴前也加一个小缓冲，确保输入框是聚焦的
-                await new Promise(r => setTimeout(r, 1000)); 
+                await new Promise(r => setTimeout(r, 1000));
                 console.log('image '+(i+1)+".png粘贴图片...");
-                await pasteImage(image[i],'image '+(i+1)+".png"); 
+                await pasteImage(image[i],'image '+(i+1)+".png");
                 //间隔1秒 执行
                 const uploadTimer = setInterval(function(){
                     const agreeButton = document.querySelector('button[aria-label="同意（关闭对话框并同意免责声明）"]');
@@ -1158,7 +1162,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
                         console.log("未找到同意按钮");
                     }
                 },1000)
-                
+
 
                 // 3. 等待上传信号
                 const isUploaded = await uploadPromise;
@@ -1167,14 +1171,14 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
 
                 console.log("✅ 第 " + (i + 1) + " 张上传完毕");
-        
+
                 // ============================================================
                 // 核心修复：这里必须加延迟！
                 // 给 Gemini UI 一点时间来渲染缩略图并重置输入框状态
                 // ============================================================
                 if (i < image.length - 1) { // 如果不是最后一张，就需要等待
                     console.log("💤 冷却 1 秒，等待 UI 恢复...");
-                    await new Promise(r => setTimeout(r, 1000)); 
+                    await new Promise(r => setTimeout(r, 1000));
                 }
             }
         }
@@ -1190,19 +1194,19 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         // Step 6: 等待回答
         console.log(`3/5 等待回答... [Action: ${action}]`);
         if(log) log.innerText = "3/5 等待回答...";
-        
+
         // 缓冲：让 Stop 按钮先出现
         await new Promise(r => setTimeout(r, 3000));
-        
+
         let is_finnal = false;
-        
+
         let return_data = null;
         let return_message = null;
 
         if (action === "generate_video") {
             // 视频需要使用超长、定制的监控逻辑 (15分钟)
-            const videoResult = await waitForVideoReady(900000); 
-            
+            const videoResult = await waitForVideoReady(900000);
+
             if (videoResult.status === 'error') {
                 throw new Error(videoResult.data || "生成视频失败"); // 直接抛出错误文字
             } else if (videoResult.status === 'timeout') {
@@ -1213,14 +1217,14 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
             }
         } else {
             // 图片和文本使用常规监听 (2分钟)
-            is_finnal = await waitForReplyComplete(); 
+            is_finnal = await waitForReplyComplete();
         }
 
         const currentUrl = window.location.href;
         const appMatch = currentUrl.match(/\/app\/([a-zA-Z0-9]+)/);
         if (appMatch && appMatch[1]) {
-           urlId = appMatch[1];
-           console.log(`🔗 提取到对话 URL ID: ${urlId}`);
+            urlId = appMatch[1];
+            console.log(`🔗 提取到对话 URL ID: ${urlId}`);
         }
         if (!is_finnal) throw new Error("任务超时 (生成等待失败)");
 
@@ -1229,7 +1233,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         // ==========================================
         console.log("4/5 处理结果...");
         if(log) log.innerText = "4/5 处理结果...";
-        
+
         if (action === "generate_image") {
             // 获取图片处理 (保持原有逻辑)
             imageResult = await getLatestReplyImages(task_id);
@@ -1245,8 +1249,8 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
             await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
             const responseBlocks = document.querySelectorAll('message-content');
             if (responseBlocks.length > 0) {
-                 const lastBlock = responseBlocks[responseBlocks.length - 1];
-                 return_data = lastBlock.innerHTML;
+                const lastBlock = responseBlocks[responseBlocks.length - 1];
+                return_data = lastBlock.innerHTML;
             } else {
                 throw new Error("获取回复数据为空或出错");
             }
@@ -1261,36 +1265,36 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         // ==========================================
         await new Promise((resolve, reject) => {
             chrome.runtime.sendMessage(
-              {
-                action: "task_completed",
-                data: return_data,
-                task_id: task_id,
-                message: return_message,
-                task_action: action, // 告诉 background 当前是什么任务
-                url_id: urlId, // 携带提取到的 URL ID
-                error: null, // 明确表示没有错误
-              },
-              (response) => {
-                if (chrome.runtime.lastError) {
-                  console.warn("通信错误:", chrome.runtime.lastError.message);
-                  // 通信错误通常不影响 Python 接收（只要 bg 没死），resolve 即可
-                  resolve();
-                } else {
-                  console.log("✅ Background 已确认收到数据");
-                  resolve();
+                {
+                    action: "task_completed",
+                    data: return_data,
+                    task_id: task_id,
+                    message: return_message,
+                    task_action: action, // 告诉 background 当前是什么任务
+                    url_id: urlId, // 携带提取到的 URL ID
+                    error: null, // 明确表示没有错误
+                },
+                (response) => {
+                    if (chrome.runtime.lastError) {
+                        console.warn("通信错误:", chrome.runtime.lastError.message);
+                        // 通信错误通常不影响 Python 接收（只要 bg 没死），resolve 即可
+                        resolve();
+                    } else {
+                        console.log("✅ Background 已确认收到数据");
+                        resolve();
+                    }
                 }
-              }
             );
         });
-        
+
         if(log) log.innerText = "✅ 完成! 任务ID: " + task_id;
-        
+
         // 如果是生成图片，且包含原有下载逻辑，则执行下载
         if (action === "generate_image") {
             await new Promise(r => setTimeout(r, 1000));
-             downloadImage(task_id); 
+            downloadImage(task_id);
         } else if (action === "generate_video") {
-             downloadVideo(task_id);
+            downloadVideo(task_id);
         }
     } catch (err) {
         console.error("❌ 任务失败:", err);
@@ -1300,12 +1304,12 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
         // 4. 发送错误消息给 Background (新增)
         // ==========================================
         // 即使失败，也要告诉 Python 解锁 task_id
-        chrome.runtime.sendMessage({ 
-            action: "task_completed", 
+        chrome.runtime.sendMessage({
+            action: "task_completed",
             data: null,
             message: null,
             task_id: task_id,
-            task_action: action, 
+            task_action: action,
             url_id: urlId, // 携带提取到的 URL ID
             error: err.message
         });
@@ -1326,7 +1330,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.log("⌨️ [Content] 收到任务ID:", request.task_id);
         console.log("⌨️ [Content] 收到任务类型:", request.task_action, "模型:", request.task_model);
         (async () => {
-        await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model, !!request.use_preloaded_tab, request.targetRatio || "9:16");
+            await typeAndSend(request.text, request.task_id, request.image, request.is_continue, request.task_action, request.task_model, !!request.use_preloaded_tab, request.targetRatio || "9:16");
             sendResponse({ success: true });
         })();
         return true;

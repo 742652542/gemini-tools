@@ -74,11 +74,15 @@ function inspectVideoState(startTime) {
 
     const sendBtn = document.querySelector('button[aria-label="Send"]') ||
                     document.querySelector('button[aria-label="发送"]');
+    const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
+                   document.querySelector('button[aria-label="Microphone"]') ||
+                   document.querySelector('button[aria-label="使用麦克风"]') ||
+                   document.querySelector('button[aria-label="Use microphone"]');
 
     const hasFinalText = rawText.trim().length > 0;
     const enoughTimePassed = Date.now() - startTime > 3000;
 
-    if (hasFinalText && sendBtn && enoughTimePassed) {
+    if (hasFinalText && (sendBtn || micBtn) && enoughTimePassed) {
         return { status: 'error', data: rawText };
     }
 
