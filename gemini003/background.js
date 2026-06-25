@@ -3,7 +3,7 @@
 // ==========================================
 // 0. 全局状态管理
 // ==========================================
-const CLIENT_ID = "bot_003";
+const CLIENT_ID = "bot_001";
 const WS_URL = `ws://127.0.0.1:9091/ws/${CLIENT_ID}`;
 let socket = null;
 let heartbeatInterval = null;
@@ -35,10 +35,10 @@ const GEMINI_USAGE_MESSAGE_TIMEOUT = 20000;
 
 // --- 核心：任务生命周期注册表 ---
 // Key: task_id (String)
-// Value: { 
-//    tab_id: Number, 
-//    download_timer: Number|null, 
-//    is_waiting_download: Boolean 
+// Value: {
+//    tab_id: Number,
+//    download_timer: Number|null,
+//    is_waiting_download: Boolean
 // }
 const taskRegistry = new Map();
 
@@ -403,14 +403,14 @@ function connectWebSocket() {
             }else{
                 const payload = {
                     status: "error",
-                    task_id: msg.task_id, 
-                    data: "", 
+                    task_id: msg.task_id,
+                    data: "",
                     error: "没有定义的消息类型"
                 };
                 sendToPython(payload);
                 closeTabAndCleanup(msg.task_id);
             }
-    
+
         } catch (e) { console.error("解析消息失败", e); }
     };
 
@@ -420,7 +420,7 @@ function connectWebSocket() {
         isConnecting = false;
         retryConnect();
     };
-    socket.onerror = () => {}; 
+    socket.onerror = () => {};
 }
 
 function retryConnect() {
@@ -663,25 +663,25 @@ function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadRe
  */
 function sendTaskResult(taskId, status, messageOrData, action, url_id) {
     console.log(`📡 [Task: ${taskId}] 发送结果: ${status}`);
-    
+
     if (socket && socket.readyState === WebSocket.OPEN) {
         const payload = {
             task_id: taskId,
             status: status,
             action: action // 增加 action 字段
         };
-        
+
         // 增加 url_id 字段 (如果有)
         if (url_id) {
             payload.url_id = url_id;
         }
-        
+
         if (status === 'success') {
             // 简单判断是文件路径还是HTML数据
             if (messageOrData && typeof messageOrData === 'string' && messageOrData.length < 300 && messageOrData.includes('.')) {
-                 payload.file_path = messageOrData; 
+                payload.file_path = messageOrData;
             } else {
-                 payload.data = messageOrData;
+                payload.data = messageOrData;
             }
         } else {
             payload.error = messageOrData;
@@ -696,14 +696,14 @@ function sendTaskResult(taskId, status, messageOrData, action, url_id) {
  */
 function closeTabAndCleanup(taskId) {
     const taskData = clearTaskRuntime(taskId);
-    if (!taskData) return; 
+    if (!taskData) return;
 
     console.log(`🧹 [Task: ${taskId}] 清理资源并关闭 Tab`);
 
     // 2. 关闭 Tab
     if (taskData.tab_id) {
         chrome.tabs.remove(taskData.tab_id, () => {
-             if (chrome.runtime.lastError) {}
+            if (chrome.runtime.lastError) {}
         });
     }
 
@@ -716,7 +716,7 @@ function closeTabAndCleanup(taskId) {
 // 3. 消息监听 (包含 新逻辑 + 原有辅助逻辑)
 // ==========================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    
+
     // ------------------------------------------------
     // A. 准备下载 (Content Script 点击下载按钮前触发)
     // ------------------------------------------------
@@ -726,10 +726,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         if (taskData) {
             console.log(`🎣 [Task: ${taskId}] 收到下载预警，启动超时监控...`);
-            
+
             taskData.is_waiting_download = true;
-            currentPendingDownloadTask = taskId; 
-            
+            currentPendingDownloadTask = taskId;
+
             // 视频也使用 15 分钟下载监控时长
             const task_action = request.task_action;
             const timeoutDuration = task_action === "generate_video" ? 900000 : 180000;
@@ -738,21 +738,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             taskData.download_timer = setTimeout(() => {
                 console.error(`⏰ [Task: ${taskId}] 下载超时 (${timeoutDuration/60000}分钟)，强制关闭!`);
                 // --- 修改点 2: 拆分调用 ---
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ 
-                    type: "download_complete",
-                    task_id: taskId, 
-                    action: taskData.task_action, // 从任务注册表中取出 action 发送
-                    file_path: '' 
-                }));
-            }
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
+                        type: "download_complete",
+                        task_id: taskId,
+                        action: taskData.task_action, // 从任务注册表中取出 action 发送
+                        file_path: ''
+                    }));
+                }
 
                 closeTabAndCleanup(taskId);
-            }, timeoutDuration); 
+            }, timeoutDuration);
 
             taskRegistry.set(taskId, taskData);
         }
-        
+
         sendResponse({ success: true });
         return false;
     }
@@ -762,15 +762,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // ------------------------------------------------
     if (request.action === "task_completed") {
         const { task_id, data, error, task_action, url_id ,message } = request;
-      
+
         const taskData = taskRegistry.get(task_id);
 
         if (!taskData) {
-            sendResponse({ success: true }); 
+            sendResponse({ success: true });
             return;
         }
 
-        
+
 
         if (error) {
             if (retryTaskAfterRecoverableError(task_id, error)) {
@@ -781,9 +781,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.log(`❌ 任务 [${task_id}] 执行出错了，全部流程结束，回传 Python`);
             const payload = {
                 status: "error",
-                task_id: task_id, 
+                task_id: task_id,
                 action: task_action, // 加上 action
-                data: data || "", 
+                source: taskData.task_source || "gemini",
+                data: data || "",
                 error: error || null,
                 message: message || null
             };
@@ -795,15 +796,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             console.log(`🎉 任务 [${task_id}] (${task_action}) 在页面执行成功，回传 Python`);
             const payload = {
                 status: "success",
-                task_id: task_id, 
+                task_id: task_id,
                 action: task_action, // 加上 action
-                data: data || "", 
+                source: taskData.task_source || "gemini",
+                data: data || "",
                 error: null,
                 message: message || null
             };
             if(url_id) payload.url_id = url_id;
             sendToPython(payload);
-            
+
             // 文本任务没有后续的下载动作，直接清理
             if (task_action === "generate_text") {
                 console.log(`🧹 [Task: ${task_id}] 文本任务无需等待下载，立即清理资源并关闭 Tab`);
@@ -888,7 +890,7 @@ chrome.downloads.onCreated.addListener((item) => {
     if (currentPendingDownloadTask) {
         console.log(`📥 [Download] ID:${item.id} 归属于 Task:${currentPendingDownloadTask}`);
         downloadIdMap.set(item.id, currentPendingDownloadTask);
-        currentPendingDownloadTask = null; 
+        currentPendingDownloadTask = null;
     }else {
         console.log(`📥 [Download] 监听到其他下载任务`);
     }
@@ -899,12 +901,12 @@ chrome.downloads.onChanged.addListener((delta) => {
     const downloadId = delta.id;
     const taskId = downloadIdMap.get(downloadId);
 
-    // if (!taskId) return; 
+    // if (!taskId) return;
 
     // 1. 下载完成
     if (delta.state && delta.state.current === 'complete') {
         console.log(`✅ [Task: ${taskId}] 下载完成!`);
-        
+
         chrome.downloads.search({ id: downloadId }, (results) => {
             const filePath = (results && results[0]) ? results[0].filename : "unknown_file";
             // --- 修改点 5: 拆分调用 (下载成功) ---
@@ -915,21 +917,21 @@ chrome.downloads.onChanged.addListener((delta) => {
                 const taskData = taskRegistry.get(taskId) || {}; // 取出 taskData 拿 action
                 console.log(`📂 文件路径: ${filePath}`);
                 if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(
-                    JSON.stringify({
-                    type: "download_complete",
-                    task_id: taskId,
-                    action: taskData.task_action, // 从注册表获取 action 传给 Python
-                    file_path: filePath,
-                    })
-                );
+                    socket.send(
+                        JSON.stringify({
+                            type: "download_complete",
+                            task_id: taskId,
+                            action: taskData.task_action, // 从注册表获取 action 传给 Python
+                            file_path: filePath,
+                        })
+                    );
                 }
                 closeTabAndCleanup(taskId);
 
                 downloadIdMap.delete(downloadId);
             }
 
-           
+
         });
     }
 
@@ -944,17 +946,17 @@ chrome.downloads.onChanged.addListener((delta) => {
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(
                     JSON.stringify({
-                         type: "download_complete",
-                         task_id: taskId,
-                         action: taskData.task_action,
-                         file_path: "",
-                        })
-                    );
+                        type: "download_complete",
+                        task_id: taskId,
+                        action: taskData.task_action,
+                        file_path: "",
+                    })
+                );
             }
             closeTabAndCleanup(taskId);
             downloadIdMap.delete(downloadId);
         }
-       
+
     }
 });
 

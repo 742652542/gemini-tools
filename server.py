@@ -462,6 +462,7 @@ async def persist_task_file_in_background(task_id: str, data: dict):
 def save_task_result(task_id: str, client_id: str, data: dict):
     # 获取任务 action
     action = data.get("action", "generate_image") # 默认为图片，兼容旧代码
+    source = str(data.get("source") or "gemini").strip().lower()
     
     # 确定最终 JSON 存放目录
     date_folder = datetime.now().strftime("%Y-%m-%d")
@@ -472,6 +473,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
     if action == "generate_image" and data.get("status") == "success" and "data" in data:
         raw_images = data["data"]
         cdn_urls = []
+        should_process_watermark = source != "chatgpt"
 
         if isinstance(raw_images, list):
             # 建立任务专用的临时图片目录
@@ -497,9 +499,12 @@ def save_task_result(task_id: str, client_id: str, data: dict):
                     with open(temp_file_path, "wb") as f:
                         f.write(image_data)
 
-                    # B. 调用水印工具：优先 legacy，未处理成功再用默认 profile
-                    if not process_gemini_watermark(temp_file_path):
-                        print(f"GeminiWatermarkTool did not modify image, continuing upload: {temp_file_path}")
+                    # B. ChatGPT 图片保留透明通道，跳过去水印处理
+                    if should_process_watermark:
+                        if not process_gemini_watermark(temp_file_path):
+                            print(f"GeminiWatermarkTool did not modify image, continuing upload: {temp_file_path}")
+                    else:
+                        print(f"Skipping watermark processing for ChatGPT image: {temp_file_path}")
                     
                     # C. 上传到 S3
                     object_name = f"ai/img/task_results/{date_folder}/{task_id+str(datetime.now().timestamp())}{ext}"

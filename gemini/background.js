@@ -783,6 +783,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 status: "error",
                 task_id: task_id, 
                 action: task_action, // 加上 action
+                source: taskData.task_source || "gemini",
                 data: data || "", 
                 error: error || null,
                 message: message || null
@@ -797,6 +798,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 status: "success",
                 task_id: task_id, 
                 action: task_action, // 加上 action
+                source: taskData.task_source || "gemini",
                 data: data || "", 
                 error: null,
                 message: message || null
