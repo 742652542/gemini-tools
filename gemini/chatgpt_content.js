@@ -1001,53 +1001,6 @@ async function sendPrompt(text, usePaste = true) {
   await clickSendButton();
 }
 
-async function clickGenerateImageButton(timeoutMs = 10000) {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < timeoutMs) {
-    const composerButton =
-      document.querySelector('button[data-testid="composer-plus-btn"]') ||
-      document.querySelector('button#composer-plus-btn') ||
-      document.querySelector('button[aria-label*="添加文件"]') ||
-      document.querySelector('button[aria-label*="Add files"]') ||
-      document.querySelector('button[aria-label*="Add photos"]');
-
-    if (composerButton) {
-      triggerElementClick(composerButton);
-      console.log('已触发“添加文件等”按钮');
-      await sleep(500);
-
-      const expanded = composerButton.getAttribute('aria-expanded') === 'true';
-      const hasMenu = !!document.querySelector('[role="menu"], [data-radix-popper-content-wrapper]');
-
-      if (!expanded && !hasMenu) {
-        await sleep(300);
-        triggerElementClick(composerButton);
-        await sleep(500);
-      }
-
-      const menuItems = Array.from(document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]'));
-      const createImageItem = menuItems.find((item) => {
-        const text = item.textContent ? item.textContent.trim() : '';
-        return text.includes('创建图片') || text.includes('Create image');
-      });
-
-      if (createImageItem) {
-        triggerElementClick(createImageItem);
-        console.log('已点击“创建图片”菜单项');
-        return true;
-      }
-
-      console.log('“添加文件等”已触发，但暂未找到“创建图片”菜单项，继续重试');
-    }
-
-    await sleep(1000);
-  }
-
-  console.log('未找到“创建图片”入口');
-  return true;
-}
-
 function extractConversationId() {
   const currentUrl = window.location.href;
   const match = currentUrl.match(/\/c\/([a-zA-Z0-9_-]+)/);
@@ -1097,10 +1050,7 @@ async function typeAndSend(
     });
     imageReplyFailureText = '';
 
-    if (action === 'generate_image') {
-      if (log) log.innerText = '⏳ 正在点击“生成图片”按钮...';
-      await clickGenerateImageButton();
-    }
+    await sleep(2000);
 
     if (Array.isArray(image) && image.length > 0) {
       for (let i = 0; i < image.length; i++) {
