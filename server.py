@@ -150,6 +150,28 @@ def _file_sha256(file_path: str) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+
+def _kill_process_tree(process: subprocess.Popen):
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+        except Exception as e:
+            print(f"Failed to kill process tree for PID {process.pid}: {e}")
+    else:
+        try:
+            process.kill()
+        except Exception as e:
+            print(f"Failed to kill process PID {process.pid}: {e}")
+
 def process_gemini_watermark(image_path: str) -> bool:
     """Try legacy watermark removal first, then default profile, then force mode."""
     original_data = None
@@ -173,9 +195,12 @@ def process_gemini_watermark(image_path: str) -> bool:
                     f.write(original_data)
 
             try:
-                result = subprocess.run(command, check=False, timeout=10)
+                process = subprocess.Popen(command)
+                returncode = process.wait(timeout=60)
+                result = subprocess.CompletedProcess(command, returncode)
             except subprocess.TimeoutExpired:
-                print(f"GeminiWatermarkTool timeout ({profile}) after 10s: {image_path}")
+                print(f"GeminiWatermarkTool timeout ({profile}) after 60s: {image_path}")
+                _kill_process_tree(process)
                 result = None
             except Exception as e:
                 print(f"Failed to execute GeminiWatermarkTool ({profile}): {e}")
