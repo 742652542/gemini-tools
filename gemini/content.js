@@ -55,7 +55,30 @@ function inspectVideoState(startTime) {
                         lastBlock.querySelector('button[aria-label="Download video"]');
     const videoEl = lastBlock.querySelector('video');
 
-    if (downloadBtn || videoEl) {
+    const hasPlaceholderText = textContent.includes("video_placeholder") ||
+        textContent.includes("placeholder") ||
+        textContent.includes("占位");
+
+    const isDisabledDownloadBtn = downloadBtn && (
+        downloadBtn.disabled ||
+        downloadBtn.getAttribute('aria-disabled') === 'true' ||
+        downloadBtn.closest('[aria-disabled="true"]')
+    );
+
+    const videoSrc = videoEl ? (videoEl.currentSrc || videoEl.src || '') : '';
+    const hasUsableVideo = videoEl &&
+        !hasPlaceholderText &&
+        videoSrc &&
+        !videoSrc.toLowerCase().includes('placeholder') &&
+        videoEl.readyState >= 2 &&
+        Number.isFinite(videoEl.duration) &&
+        videoEl.duration > 0;
+
+    if (downloadBtn && !isDisabledDownloadBtn && !hasPlaceholderText) {
+        return { status: 'success', data: rawText };
+    }
+
+    if (hasUsableVideo) {
         return { status: 'success', data: rawText };
     }
 
@@ -66,7 +89,10 @@ function inspectVideoState(startTime) {
         textContent.includes("正在生成视频") ||
         textContent.includes("generating your video") ||
         textContent.includes("请稍后回来查看") ||
-        textContent.includes("check back later");
+        textContent.includes("check back later") ||
+        hasPlaceholderText ||
+        isDisabledDownloadBtn ||
+        (videoEl && !hasUsableVideo);
 
     if (isGenerating) {
         return { status: 'pending' };
