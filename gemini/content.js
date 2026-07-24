@@ -51,38 +51,12 @@ function inspectVideoState(startTime) {
     const rawText = lastBlock.textContent || "";
     const textContent = rawText.toLowerCase().trim();
 
-    let hasPendingVideoArtifact = false;
-    for (let i = responseBlocks.length - 1; i >= 0; i--) {
-        const block = responseBlocks[i];
-        const blockRawText = block.textContent || "";
-        const blockText = blockRawText.toLowerCase().trim();
-        const downloadBtn = block.querySelector('button[aria-label="下载视频"]') ||
-                            block.querySelector('button[aria-label="Download video"]');
-        const videoEl = block.querySelector('video');
+    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
+                        lastBlock.querySelector('button[aria-label="Download video"]');
+    const videoEl = lastBlock.querySelector('video');
 
-        const hasPlaceholderText = blockText.includes("video_placeholder") ||
-            blockText.includes("placeholder") ||
-            blockText.includes("占位");
-
-        const isDisabledDownloadBtn = downloadBtn && (
-            downloadBtn.disabled ||
-            downloadBtn.getAttribute('aria-disabled') === 'true' ||
-            downloadBtn.closest('[aria-disabled="true"]')
-        );
-
-        const videoSrc = videoEl ? (videoEl.currentSrc || videoEl.src || '') : '';
-        const hasUsableVideo = videoEl &&
-            !hasPlaceholderText &&
-            videoSrc &&
-            !videoSrc.toLowerCase().includes('placeholder');
-
-        if (downloadBtn && !isDisabledDownloadBtn && !hasPlaceholderText) {
-            return { status: 'success', data: blockRawText };
-        }
-
-        if (hasPlaceholderText || isDisabledDownloadBtn || hasUsableVideo || (videoEl && !hasUsableVideo)) {
-            hasPendingVideoArtifact = true;
-        }
+    if (downloadBtn || videoEl) {
+        return { status: 'success', data: rawText };
     }
 
     const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
@@ -93,7 +67,7 @@ function inspectVideoState(startTime) {
         textContent.includes("generating your video") ||
         textContent.includes("请稍后回来查看") ||
         textContent.includes("check back later") ||
-        hasPendingVideoArtifact;
+        textContent.includes("video_placeholder");
 
     if (isGenerating) {
         return { status: 'pending' };
@@ -637,39 +611,18 @@ async function downloadImage(task_id) {
 /**
  * 视频专用下载逻辑
  */
-function findVideoDownloadButton() {
-    const responseBlocks = document.querySelectorAll('message-content');
-
-    // Gemini 可能在视频块之后再追加一条纯文本“视频已准备好”，所以倒序查找视频下载按钮。
-    for (let i = responseBlocks.length - 1; i >= 0; i--) {
-        const candidate = responseBlocks[i].querySelector('button[aria-label="下载视频"]') ||
-                          responseBlocks[i].querySelector('button[aria-label="Download video"]');
-        if (candidate && !candidate.disabled && candidate.getAttribute('aria-disabled') !== 'true' && !candidate.closest('[aria-disabled="true"]')) {
-            return candidate;
-        }
-    }
-
-    return null;
-}
-
-async function waitForVideoDownloadButton(timeoutMs = 30000) {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-        const downloadBtn = findVideoDownloadButton();
-        if (downloadBtn) return downloadBtn;
-
-        console.log("⏳ 暂未找到可点击的'下载视频'按钮，稍后重试...");
-        await new Promise(r => setTimeout(r, 1000));
-    }
-
-    return null;
-}
-
 async function downloadVideo(task_id) {
     console.log("开始触发视频下载...");
     await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
 
-    const downloadBtn = await waitForVideoDownloadButton(30000);
+    const responseBlocks = document.querySelectorAll('message-content');
+    if (responseBlocks.length === 0) return "未找到回答";
+
+    const lastBlock = responseBlocks[responseBlocks.length - 1];
+    
+    // 查找包含“下载视频”属性的按钮
+    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
+                        lastBlock.querySelector('button[aria-label="Download video"]');
                         
     if (downloadBtn) {
         console.log("🖱️ 找到'下载视频'按钮，准备触发拦截...");
@@ -1342,7 +1295,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
             await new Promise(r => setTimeout(r, 1000));
              downloadImage(task_id); 
         } else if (action === "generate_video") {
-             await downloadVideo(task_id);
+             downloadVideo(task_id);
         }
     } catch (err) {
         console.error("❌ 任务失败:", err);
