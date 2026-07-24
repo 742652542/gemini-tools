@@ -51,35 +51,42 @@ function inspectVideoState(startTime) {
     const rawText = lastBlock.textContent || "";
     const textContent = rawText.toLowerCase().trim();
 
-    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
-                        lastBlock.querySelector('button[aria-label="Download video"]');
-    const videoEl = lastBlock.querySelector('video');
+    let hasPendingVideoArtifact = false;
+    for (let i = responseBlocks.length - 1; i >= 0; i--) {
+        const block = responseBlocks[i];
+        const blockRawText = block.textContent || "";
+        const blockText = blockRawText.toLowerCase().trim();
+        const downloadBtn = block.querySelector('button[aria-label="下载视频"]') ||
+                            block.querySelector('button[aria-label="Download video"]');
+        const videoEl = block.querySelector('video');
 
-    const hasPlaceholderText = textContent.includes("video_placeholder") ||
-        textContent.includes("placeholder") ||
-        textContent.includes("占位");
+        const hasPlaceholderText = blockText.includes("video_placeholder") ||
+            blockText.includes("placeholder") ||
+            blockText.includes("占位");
 
-    const isDisabledDownloadBtn = downloadBtn && (
-        downloadBtn.disabled ||
-        downloadBtn.getAttribute('aria-disabled') === 'true' ||
-        downloadBtn.closest('[aria-disabled="true"]')
-    );
+        const isDisabledDownloadBtn = downloadBtn && (
+            downloadBtn.disabled ||
+            downloadBtn.getAttribute('aria-disabled') === 'true' ||
+            downloadBtn.closest('[aria-disabled="true"]')
+        );
 
-    const videoSrc = videoEl ? (videoEl.currentSrc || videoEl.src || '') : '';
-    const hasUsableVideo = videoEl &&
-        !hasPlaceholderText &&
-        videoSrc &&
-        !videoSrc.toLowerCase().includes('placeholder') &&
-        videoEl.readyState >= 2 &&
-        Number.isFinite(videoEl.duration) &&
-        videoEl.duration > 0;
+        const videoSrc = videoEl ? (videoEl.currentSrc || videoEl.src || '') : '';
+        const hasUsableVideo = videoEl &&
+            !hasPlaceholderText &&
+            videoSrc &&
+            !videoSrc.toLowerCase().includes('placeholder');
 
-    if (downloadBtn && !isDisabledDownloadBtn && !hasPlaceholderText) {
-        return { status: 'success', data: rawText };
-    }
+        if (downloadBtn && !isDisabledDownloadBtn && !hasPlaceholderText) {
+            return { status: 'success', data: blockRawText };
+        }
 
-    if (hasUsableVideo) {
-        return { status: 'success', data: rawText };
+        if (hasUsableVideo) {
+            return { status: 'success', data: blockRawText };
+        }
+
+        if (hasPlaceholderText || isDisabledDownloadBtn || (videoEl && !hasUsableVideo)) {
+            hasPendingVideoArtifact = true;
+        }
     }
 
     const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
@@ -90,9 +97,7 @@ function inspectVideoState(startTime) {
         textContent.includes("generating your video") ||
         textContent.includes("请稍后回来查看") ||
         textContent.includes("check back later") ||
-        hasPlaceholderText ||
-        isDisabledDownloadBtn ||
-        (videoEl && !hasUsableVideo);
+        hasPendingVideoArtifact;
 
     if (isGenerating) {
         return { status: 'pending' };
@@ -643,11 +648,13 @@ async function downloadVideo(task_id) {
     const responseBlocks = document.querySelectorAll('message-content');
     if (responseBlocks.length === 0) return "未找到回答";
 
-    const lastBlock = responseBlocks[responseBlocks.length - 1];
-    
-    // 查找包含“下载视频”属性的按钮
-    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
-                        lastBlock.querySelector('button[aria-label="Download video"]');
+    // Gemini 可能在视频块之后再追加一条纯文本“视频已准备好”，所以倒序查找视频下载按钮。
+    let downloadBtn = null;
+    for (let i = responseBlocks.length - 1; i >= 0; i--) {
+        downloadBtn = responseBlocks[i].querySelector('button[aria-label="下载视频"]') ||
+                      responseBlocks[i].querySelector('button[aria-label="Download video"]');
+        if (downloadBtn) break;
+    }
                         
     if (downloadBtn) {
         console.log("🖱️ 找到'下载视频'按钮，准备触发拦截...");
