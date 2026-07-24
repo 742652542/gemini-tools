@@ -55,8 +55,17 @@ function inspectVideoState(startTime) {
                         lastBlock.querySelector('button[aria-label="Download video"]');
     const videoEl = lastBlock.querySelector('video');
 
-    if (downloadBtn || videoEl) {
+    const isDownloadReady = downloadBtn &&
+        !downloadBtn.disabled &&
+        downloadBtn.getAttribute('aria-disabled') !== 'true' &&
+        !downloadBtn.closest('[aria-disabled="true"]');
+
+    if (isDownloadReady) {
         return { status: 'success', data: rawText };
+    }
+
+    if (downloadBtn || videoEl) {
+        return { status: 'pending' };
     }
 
     const stopBtn = document.querySelector('button[aria-label="Stop generating"]') ||
@@ -618,11 +627,13 @@ async function downloadVideo(task_id) {
     const responseBlocks = document.querySelectorAll('message-content');
     if (responseBlocks.length === 0) return "未找到回答";
 
-    const lastBlock = responseBlocks[responseBlocks.length - 1];
-    
-    // 查找包含“下载视频”属性的按钮
-    const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') || 
-                        lastBlock.querySelector('button[aria-label="Download video"]');
+    // 查找包含“下载视频”属性的按钮；Gemini 可能在视频块后追加纯文本回复，所以倒序查找。
+    let downloadBtn = null;
+    for (let i = responseBlocks.length - 1; i >= 0; i--) {
+        downloadBtn = responseBlocks[i].querySelector('button[aria-label="下载视频"]') ||
+                      responseBlocks[i].querySelector('button[aria-label="Download video"]');
+        if (downloadBtn) break;
+    }
                         
     if (downloadBtn) {
         console.log("🖱️ 找到'下载视频'按钮，准备触发拦截...");
@@ -645,9 +656,31 @@ async function downloadVideo(task_id) {
             
             await new Promise(r => setTimeout(r, 1000)); 
 
-            // 触发点击
-            downloadBtn.click();
-            console.log("🚀 '下载视频'已点击，由 Background 处理文件...");
+            const clickDownloadButton = () => {
+                const currentBlocks = document.querySelectorAll('message-content');
+                let currentDownloadBtn = null;
+                for (let i = currentBlocks.length - 1; i >= 0; i--) {
+                    currentDownloadBtn = currentBlocks[i].querySelector('button[aria-label="下载视频"]') ||
+                                         currentBlocks[i].querySelector('button[aria-label="Download video"]');
+                    if (currentDownloadBtn) break;
+                }
+
+                if (currentDownloadBtn) {
+                    currentDownloadBtn.click();
+                    console.log("🚀 '下载视频'已点击，由 Background 处理文件...");
+                }
+            };
+
+            // 触发点击；如果页面下载事件没有立即生效，每 10 秒补点一次，最多 3 次。
+            clickDownloadButton();
+            let retryCount = 1;
+            const retryTimer = setInterval(() => {
+                retryCount++;
+                clickDownloadButton();
+                if (retryCount >= 3) {
+                    clearInterval(retryTimer);
+                }
+            }, 10000);
         } catch (error) {
             console.error("❌ 拦截下载失败:", error);
         }
