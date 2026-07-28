@@ -73,6 +73,7 @@ function inspectVideoState(startTime) {
 
     const isGenerating = stopBtn ||
         textContent.includes("正在生成视频") ||
+        textContent.includes("您的视频已准备") ||
         textContent.includes("generating your video") ||
         textContent.includes("请稍后回来查看") ||
         textContent.includes("check back later") ||
