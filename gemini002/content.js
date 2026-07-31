@@ -50,6 +50,7 @@ function inspectVideoState(startTime) {
     const lastBlock = responseBlocks[responseBlocks.length - 1];
     const rawText = lastBlock.textContent || "";
     const textContent = rawText.toLowerCase().trim();
+    const compactTextContent = textContent.replace(/\s+/g, '');
 
     const downloadBtn = lastBlock.querySelector('button[aria-label="下载视频"]') ||
                         lastBlock.querySelector('button[aria-label="Download video"]');
@@ -74,9 +75,13 @@ function inspectVideoState(startTime) {
     const isGenerating = stopBtn ||
         textContent.includes("正在生成视频") ||
         textContent.includes("您的视频已准备") ||
+        textContent.includes("你的视频已准备") ||
+        textContent.includes("视频已准备就绪") ||
+        textContent.includes("your video is ready") ||
         textContent.includes("generating your video") ||
         textContent.includes("请稍后回来查看") ||
         textContent.includes("check back later") ||
+        compactTextContent.includes("yourvideoisready") ||
         textContent.includes("video_placeholder");
 
     if (isGenerating) {
