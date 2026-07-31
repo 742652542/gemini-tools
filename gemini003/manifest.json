@@ -7,10 +7,12 @@
     "activeTab",
     "tabs" ,
     "downloads", 
+    "storage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
+    "http://localhost/*",
     "https://gemini.google.com/*",
     "https://ixspy.com/*",
     "*://*.googleusercontent.com/*",
@@ -21,6 +23,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "AI Tools Bot",
+    "default_popup": "popup.html"
   },
   "content_scripts": [
     {

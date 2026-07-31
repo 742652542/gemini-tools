@@ -291,6 +291,11 @@ function normalizeAssistantText(text) {
   return meaninglessTexts.has(normalized) ? '' : normalized;
 }
 
+function isImageAnalysisProgressText(text) {
+  if (!text || typeof text !== 'string') return false;
+  return /正在分析\s*\d*\s*幅图片/.test(text);
+}
+
 function getMeaningfulAssistantTextFromTurn(turnSection) {
   if (!turnSection) return '';
 
@@ -808,7 +813,8 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
         Date.now() - startTime >= sameTurnReadyGraceMs;
       const latestAssistantText = getMeaningfulAssistantTextFromTurn(latestAssistantTurn);
       const textLength = latestAssistantText.length;
-      const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0;
+      const isAnalysisProgressText = isImageAnalysisProgressText(latestAssistantText);
+      const textCandidateReady = !stopBtn && !loadingNow && !hasActualImageOutput && textLength > 0 && !isAnalysisProgressText;
       const canUseSameTurnFallback = !!latestTurnIdentity && latestTurnIdentity === initialTurnIdentity && initialTurnWasGenerating && !loadingNow;
 
       const stateKey = [
@@ -836,6 +842,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
           hasImageFallback,
           imageCandidateCount,
           textLength,
+          isAnalysisProgressText,
           becameReadyOnSameTurn,
           canUseSameTurnFallback,
           sameTurnAlreadyUsable
@@ -902,7 +909,7 @@ function waitForImageReplyComplete(timeoutMs = 240000) {
       const finalText = getMeaningfulAssistantTextFromTurn(latestAssistantTurn);
       const latestTurn = getLatestImageAssistantTurnSection() || latestAssistantTurn;
       const hasTransitionSurface = hasImageTransitionSurface(latestTurn);
-      if (finalText && !hasTransitionSurface && !imageReplyFailureText) {
+      if (finalText && !hasTransitionSurface && !imageReplyFailureText && !isImageAnalysisProgressText(finalText)) {
         imageReplyFailureText = finalText;
         console.warn('⚠️ [生图分支] 超时时检测到文本输出，按文本失败返回');
       }

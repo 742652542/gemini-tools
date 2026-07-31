@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gemini Pro Bot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <h1>CodeX 授权</h1>
+
+    <label class="field">
+      <span>邮箱</span>
+      <input id="account-input" type="email" autocomplete="off" placeholder="请输入邮箱">
+    </label>
+
+    <div id="account-info" class="account-info"></div>
+
+    <div class="actions">
+      <button id="start-auth" type="button">获取账号信息</button>
+      <button id="clear-account" type="button" class="secondary">清空</button>
+    </div>
+
+    <p id="status-text" class="status" aria-live="polite"></p>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

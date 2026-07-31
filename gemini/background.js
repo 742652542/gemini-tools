@@ -29,9 +29,34 @@ const CHATGPT_RETRYABLE_ERRORS = [
 ];
 const GEMINI_USAGE_URL = "https://gemini.google.com/usage";
 const GEMINI_USAGE_POST_URL = "https://ixspy.com/api/gemini/receive-line-info";
-const GEMINI_USAGE_INTERVAL_MS = 10 * 60 * 1000;
+const GEMINI_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const GEMINI_USAGE_PAGE_TIMEOUT = 30000;
 const GEMINI_USAGE_MESSAGE_TIMEOUT = 20000;
+const AUTH_CODE_STORAGE_KEY = "gemini_bot_code";
+
+function captureAuthCallbackUrl(url) {
+    if (!url) return;
+
+    let parsedUrl = null;
+    try {
+        parsedUrl = new URL(url);
+    } catch (error) {
+        return;
+    }
+
+    if (parsedUrl.hostname !== "localhost" || parsedUrl.pathname !== "/auth/callback") return;
+
+    const code = parsedUrl.searchParams.get("code");
+    if (!code) return;
+
+    chrome.storage.local.set({ [AUTH_CODE_STORAGE_KEY]: code }, () => {
+        if (chrome.runtime.lastError) {
+            console.warn("[Auth] 授权 code 保存失败:", chrome.runtime.lastError.message);
+            return;
+        }
+        console.log("[Auth] 已截获并保存授权 code");
+    });
+}
 
 // --- 核心：任务生命周期注册表 ---
 // Key: task_id (String)
@@ -872,6 +897,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    captureAuthCallbackUrl(changeInfo.url);
+
     if (!isManagedPreloadTab(tabId) || preloadState !== "ready") return;
     if (!changeInfo.url && changeInfo.status !== "loading") return;
 
