@@ -173,40 +173,61 @@ function waitForReplyComplete(timeoutMs = 240000) {
         const startTime = Date.now();
 
         const observer = new MutationObserver(() => {
-            // 查找"停止"按钮 (覆盖中英文)
-            const stopBtn = document.querySelector('button[aria-label="Stop generating"]') || 
-                            document.querySelector('button[aria-label="停止生成"]');
-            
-            // 查找"发送"按钮
-            const sendBtn = document.querySelector('button[aria-label="Send"]') || 
-                            document.querySelector('button[aria-label="发送"]');
+        
+            // 生成中的按钮
+            const generateBtn = document.querySelector('button[aria-label="Stop generating"]') || 
+                document.querySelector('button[aria-label="停止生成"]');    
 
-            // 查找"语音/麦克风"按钮
-            const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
-                           document.querySelector('button[aria-label="Microphone"]') ||
-                           document.querySelector('button[aria-label="使用麦克风"]') ||
-                           document.querySelector('button[aria-label="Use microphone"]');
-
-            // 逻辑：停止按钮不存在 + 发送按钮存在/语音按钮存在 = 空闲/完成
-            // 且必须确保距离开始监听已经过了一小段时间(防止刚点击发送还没来得及变状态)
-            if (!stopBtn && (sendBtn || micBtn) && (Date.now() - startTime > 1000)) {
-                const responses = document.querySelectorAll('message-content');
-                if (responses.length > 0) {
-                    observer.disconnect();
-                    clearTimeout(timer);
-                    resolve(true);
+            if(!generateBtn && (Date.now() - startTime > 3000)){
+                let isComplete = false;
+                // 查找可以判断为完成的按钮
+                const sendBtn = document.querySelector('button[aria-label="Send"]') || 
+                                document.querySelector('button[aria-label="发送"]') || 
+                                document.querySelector('button[aria-label^="麦克风"]') ||
+                                document.querySelector('button[aria-label^="microphone" i]') ||
+                                document.querySelector('button[aria-label^="dictate" i]');
+                if (sendBtn) {
+                    isComplete = true;
                 }else{
-                    const container = document.querySelectorAll("response-container");
-                    if (container.length == 0) {
-                        console.warn("⚠️ 没有生成内容");
+                    //保底查找一下下载按钮
+                    const responseBlocks = document.querySelectorAll('message-content');
+                    const lastBlock = responseBlocks[responseBlocks.length - 1];
+                    const imageDownloadBtn = lastBlock && (
+                        lastBlock.querySelector('button[aria-label="下载完整尺寸的图片"]') ||
+                        lastBlock.querySelector('button[aria-label="Download full size image"]') ||
+                        lastBlock.querySelector('gem-icon-button[data-test-id="download-generated-image-button"] button')
+                    );
+        
+                    const isImageDownloadReady = imageDownloadBtn &&
+                        !imageDownloadBtn.disabled &&
+                        imageDownloadBtn.getAttribute('aria-disabled') !== 'true' &&
+                        !imageDownloadBtn.closest('[aria-disabled="true"]');
+                        
+                    if (isImageDownloadReady) {
+                        isComplete = true
+                    }
+                }
+                if (isComplete) {
+                    const responses = document.querySelectorAll('message-content');
+                    if (responses.length > 0) {
                         observer.disconnect();
                         clearTimeout(timer);
                         resolve(true);
                     }else{
-                        console.log("✅ 生成失败");
+                        const container = document.querySelectorAll("response-container");
+                        if (container.length == 0) {
+                            console.warn("⚠️ 没有生成内容");
+                            observer.disconnect();
+                            clearTimeout(timer);
+                            resolve(true);
+                        }else{
+                            console.log("✅ 生成失败");
+                        }
                     }
                 }
-            }
+            }else{
+                console.log('还在生成中，继续等待。')
+            } 
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
