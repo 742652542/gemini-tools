@@ -89,16 +89,15 @@ function inspectVideoState(startTime) {
     }
 
     const sendBtn = document.querySelector('button[aria-label="Send"]') ||
-                    document.querySelector('button[aria-label="发送"]');
-    const micBtn = document.querySelector('button[aria-label="麦克风"]') ||
-                   document.querySelector('button[aria-label="Microphone"]') ||
-                   document.querySelector('button[aria-label="使用麦克风"]') ||
-                   document.querySelector('button[aria-label="Use microphone"]');
+                    document.querySelector('button[aria-label="发送"]') ||
+                    document.querySelector('button[aria-label*="麦克风"]') ||
+                    document.querySelector('button[aria-label*="microphone" i]') ||
+                    document.querySelector('button[aria-label^="dictate" i]')
 
     const hasFinalText = rawText.trim().length > 0;
     const enoughTimePassed = Date.now() - startTime > 3000;
 
-    if (hasFinalText && (sendBtn || micBtn) && enoughTimePassed) {
+    if (hasFinalText && sendBtn && enoughTimePassed) {
         return { status: 'error', data: rawText };
     }
 
@@ -181,11 +180,11 @@ function waitForReplyComplete(timeoutMs = 240000) {
             if(!generateBtn && (Date.now() - startTime > 3000)){
                 let isComplete = false;
                 // 查找可以判断为完成的按钮
-                const sendBtn = document.querySelector('button[aria-label="Send"]') || 
-                                document.querySelector('button[aria-label="发送"]') || 
-                                document.querySelector('button[aria-label^="麦克风"]') ||
-                                document.querySelector('button[aria-label^="microphone" i]') ||
-                                document.querySelector('button[aria-label^="dictate" i]');
+                const sendBtn = document.querySelector('button[aria-label="Send"]') ||
+                                document.querySelector('button[aria-label="发送"]') ||
+                                document.querySelector('button[aria-label*="麦克风"]') ||
+                                document.querySelector('button[aria-label*="microphone" i]') ||
+                                document.querySelector('button[aria-label^="dictate" i]')
                 if (sendBtn) {
                     isComplete = true;
                 }else{
