@@ -624,6 +624,17 @@ async function downloadImage(task_id) {
                 // 2. 触发点击 (这会触发浏览器的下载事件，被 Background 捕获)
                 sendBtn.click();
                 console.log("🚀 发送按钮已点击，等待拦截数据...");
+
+                // 如果页面下载事件没有立即生效，每 10 秒补点一次，最多点击 3 次。
+                let retryCount = 1;
+                const retryTimer = setInterval(() => {
+                    retryCount++;
+                    sendBtn.click();
+                    console.log(`🔄 第 ${retryCount} 次点击图片下载按钮...`);
+                    if (retryCount >= 3) {
+                        clearInterval(retryTimer);
+                    }
+                }, 10000);
             } catch (error) {
                 console.error("❌ 拦截下载失败:", error);
                 // 失败了不要紧，代码继续往下走，返回原始的缩略图 HTML 也是可以接受的
