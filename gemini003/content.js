@@ -1429,7 +1429,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function createPanel() {
     const div = document.createElement('div');
     div.innerHTML = `
-        <div style="position:fixed; bottom:80px; left:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:220px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+        <div style="position:fixed; bottom:80px; right:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:220px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
             <h3 style="margin:0 0 10psx 0; font-size:14px; color:#e8eaed;">Gemini 全自动机器人</h3>
             <div id="status-log" style="margin-top:10px; font-size:12px; color:#9aa0a6;">就绪</div>
         </div>
@@ -1441,7 +1441,7 @@ function createPanel() {
 function createPanel() {
     const div = document.createElement('div');
     div.innerHTML = `
-        <div style="position:fixed; bottom:80px; left:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:220px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+        <div style="position:fixed; bottom:80px; right:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:220px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
             <h3 style="margin:0 0 10psx 0; font-size:14px; color:#e8eaed;">Gemini 全自动机器人</h3>
             <button id="btn-test" style="width:100%; padding:8px; background:#8ab4f8; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">⚡ 运行全流程测试</button>
            

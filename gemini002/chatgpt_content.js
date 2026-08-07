@@ -60,6 +60,44 @@ function getPromptInput() {
   return document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
 }
 
+async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5000) {
+  console.log('开始切换工作模式!')
+  const normalizedTarget = targetSurface === 'work' ? 'work' : 'chat';
+  const targetLabels = normalizedTarget === 'work' ? ['工作', 'work'] : ['聊天', 'chat'];
+  const targetName = normalizedTarget === 'work' ? '工作/Work' : '聊天/Chat';
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const group = document.querySelector('[role="radiogroup"]');
+    if (!group) {
+      await sleep(200);
+      continue;
+    }
+
+    const radios = Array.from(group.querySelectorAll('button[role="radio"]'));
+    const targetButton = radios.find((button) => {
+      const text = (button.textContent || '').replace(/\s+/g, '').trim().toLowerCase();
+      return targetLabels.includes(text);
+    });
+
+    if (!targetButton) {
+      throw new Error(`找不到 ChatGPT ${targetName} 界面选项`);
+    }
+
+    if (targetButton.getAttribute('aria-checked') === 'true' || targetButton.getAttribute('data-state') === 'on') {
+      console.log(`✅ ChatGPT 当前已选择${targetName}界面`);
+      return true;
+    }
+
+    console.log(`🔁 ChatGPT 当前不是${targetName}界面，准备切换`);
+    triggerElementClick(targetButton);
+    await sleep(500);
+  }
+
+  console.warn('⚠️ 未检测到 ChatGPT 聊天/工作切换器，继续执行任务');
+  return false;
+}
+
 function getUploadPreviewCount() {
   const selectors = [
     'button[aria-label*="Remove attachment"]',
@@ -1038,7 +1076,8 @@ async function typeAndSend(
   is_continue = false,
   action = 'generate_text',
   model = '',
-  source = 'chatgpt'
+  source = 'chatgpt',
+  chatSurface = 'chat'
 ) {
   const log = document.getElementById('status-log');
   if (log) log.innerText = `🚀 任务启动: ${task_id || '-'} (${action || '-'})`;
@@ -1051,6 +1090,7 @@ async function typeAndSend(
       action,
       model,
       source,
+      chatSurface,
       is_continue,
       textLength: typeof text === 'string' ? text.length : 0,
       imageCount: Array.isArray(image) ? image.length : 0
@@ -1058,6 +1098,7 @@ async function typeAndSend(
     imageReplyFailureText = '';
 
     await sleep(2000);
+    await ensureChatInterfaceSelected(chatSurface);
 
     if (Array.isArray(image) && image.length > 0) {
       for (let i = 0; i < image.length; i++) {
@@ -1123,9 +1164,10 @@ async function typeAndSendTest(
   is_continue = false,
   action = 'generate_text',
   model = '',
-  source = 'chatgpt'
+  source = 'chatgpt',
+  chatSurface = 'chat'
 ) {
-  return typeAndSend(text, task_id, image, is_continue, action, model, source);
+  return typeAndSend(text, task_id, image, is_continue, action, model, source, chatSurface);
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -1137,7 +1179,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       request.is_continue,
       request.task_action,
       request.task_model,
-      request.source
+      request.source,
+      request.chat_surface
     ).then(() => {
       sendResponse({ success: true });
     }).catch((err) => {
@@ -1153,9 +1196,10 @@ function createPanel() {
   const div = document.createElement('div');
   div.id = 'chatgpt-bot-panel';
   div.innerHTML = `
-        <div style="position:fixed; bottom:80px; left:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:220px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+        <div style="position:fixed; bottom:80px; right:20px; z-index:99999; background:#202124; padding:15px; border-radius:8px; border:1px solid #5f6368; color:white; font-family:sans-serif; width:240px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
             <h3 style="margin:0 0 10px 0; font-size:14px; color:#e8eaed;">ChatGPT 全自动机器人</h3>
             <button id="btn-test" style="width:100%; padding:8px; background:#8ab4f8; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">⚡ 运行图片上传测试</button>
+            <button id="btn-work-check" style="width:100%; margin-top:8px; padding:8px; background:#a8dab5; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">🧪 运行 Work 定时检查</button>
             <div id="status-log" style="margin-top:10px; font-size:12px; color:#9aa0a6;">就绪</div>
         </div>
     `;
@@ -1166,6 +1210,28 @@ function createPanel() {
     button.onclick = () => {
       typeAndSendTest().catch((err) => {
         console.error('测试入口执行失败:', err);
+      });
+    };
+  }
+
+  const workCheckButton = document.getElementById('btn-work-check');
+  if (workCheckButton) {
+    workCheckButton.onclick = () => {
+      const log = document.getElementById('status-log');
+      if (log) log.innerText = '⏳ 正在触发 Work 定时检查...';
+      chrome.runtime.sendMessage({ action: 'run_chatgpt_work_check' }, (response) => {
+        if (chrome.runtime.lastError) {
+          if (log) log.innerText = `❌ 触发失败: ${chrome.runtime.lastError.message}`;
+          return;
+        }
+
+        if (response && response.success) {
+          if (log) log.innerText = `✅ Work 检查完成，序号: ${response.sequence}`;
+          return;
+        }
+
+        const reason = response && (response.reason || response.error) ? response.reason || response.error : '未知错误';
+        if (log) log.innerText = `⚠️ Work 检查未完成: ${reason}`;
       });
     };
   }
