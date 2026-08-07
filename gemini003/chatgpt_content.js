@@ -63,9 +63,11 @@ function getPromptInput() {
 async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5000) {
   console.log('开始切换工作模式!')
   const normalizedTarget = targetSurface === 'work' ? 'work' : 'chat';
+  const strictMode = normalizedTarget === 'work';
   const targetLabels = normalizedTarget === 'work' ? ['工作', 'work'] : ['聊天', 'chat'];
   const targetName = normalizedTarget === 'work' ? '工作/Work' : '聊天/Chat';
   const start = Date.now();
+  let foundTargetButton = false;
 
   while (Date.now() - start < timeoutMs) {
     const group = document.querySelector('[role="radiogroup"]');
@@ -83,6 +85,7 @@ async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5
     if (!targetButton) {
       throw new Error(`找不到 ChatGPT ${targetName} 界面选项`);
     }
+    foundTargetButton = true;
 
     if (targetButton.getAttribute('aria-checked') === 'true' || targetButton.getAttribute('data-state') === 'on') {
       console.log(`✅ ChatGPT 当前已选择${targetName}界面`);
@@ -92,6 +95,10 @@ async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5
     console.log(`🔁 ChatGPT 当前不是${targetName}界面，准备切换`);
     triggerElementClick(targetButton);
     await sleep(500);
+  }
+
+  if (strictMode) {
+    throw new Error(foundTargetButton ? `ChatGPT ${targetName} 界面切换失败` : `未检测到 ChatGPT ${targetName} 界面切换器`);
   }
 
   console.warn('⚠️ 未检测到 ChatGPT 聊天/工作切换器，继续执行任务');
