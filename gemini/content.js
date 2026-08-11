@@ -92,7 +92,9 @@ function inspectVideoState(startTime) {
                     document.querySelector('button[aria-label="发送"]') ||
                     document.querySelector('button[aria-label*="麦克风"]') ||
                     document.querySelector('button[aria-label*="microphone" i]') ||
-                    document.querySelector('button[aria-label^="dictate" i]')
+                    document.querySelector('button[aria-label*="语音输入"]') ||
+                    document.querySelector('button[aria-label*="voice input" i]') ||
+                    document.querySelector('button[aria-label^="dictate" i]');
 
     const hasFinalText = rawText.trim().length > 0;
     const enoughTimePassed = Date.now() - startTime > 3000;
@@ -184,7 +186,9 @@ function waitForReplyComplete(timeoutMs = 240000) {
                                 document.querySelector('button[aria-label="发送"]') ||
                                 document.querySelector('button[aria-label*="麦克风"]') ||
                                 document.querySelector('button[aria-label*="microphone" i]') ||
-                                document.querySelector('button[aria-label^="dictate" i]')
+                                document.querySelector('button[aria-label*="语音输入"]') ||
+                                document.querySelector('button[aria-label*="voice input" i]') ||
+                                document.querySelector('button[aria-label^="dictate" i]');
                 if (sendBtn) {
                     isComplete = true;
                 }else{
