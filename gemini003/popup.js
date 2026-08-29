@@ -13,6 +13,7 @@ const ACCOUNT_INFO_ENDPOINT = 'https://ixspy.com/api/v1/admin/openai/account-inf
 const accountInput = document.getElementById('account-input');
 const accountInfoText = document.getElementById('account-info');
 const startAuthBtn = document.getElementById('start-auth');
+const reauthAccountBtn = document.getElementById('reauth-account');
 const clearAccountBtn = document.getElementById('clear-account');
 const statusText = document.getElementById('status-text');
 
@@ -91,6 +92,8 @@ function updateAccountInfoText(authInfo) {
 }
 
 function updateButtonByAuthState(authInfo) {
+  reauthAccountBtn.hidden = !hasAccountInfo(authInfo);
+
   if (authInfo[SESSION_ID_STORAGE_KEY] && authInfo[STATE_STORAGE_KEY] && authInfo[CODE_STORAGE_KEY]) {
     startAuthBtn.textContent = '完成授权';
     startAuthBtn.dataset.mode = 'complete';
@@ -105,6 +108,38 @@ function updateButtonByAuthState(authInfo) {
 
   startAuthBtn.textContent = '开始授权';
   startAuthBtn.dataset.mode = 'start';
+}
+
+async function startAuthorizationFlow(storedInfo, statusMessage = '正在请求授权地址...') {
+  if (!hasAccountInfo(storedInfo)) {
+    throw new Error('账号信息不完整，请先获取账号信息。');
+  }
+
+  setStatus(statusMessage);
+  await clearGeneratedAuthInfo();
+  const data = await requestAuthUrl(storedInfo[PROXY_ID_STORAGE_KEY]);
+  const authUrl = data && data.data ? data.data.auth_url : '';
+  const sessionId = data && data.data ? data.data.session_id : '';
+  const state = extractStateFromAuthUrl(authUrl);
+
+  if (!authUrl || !sessionId || !state) {
+    throw new Error('授权地址数据不完整。');
+  }
+
+  await chrome.storage.local.set({
+    [AUTH_URL_STORAGE_KEY]: authUrl,
+    [SESSION_ID_STORAGE_KEY]: sessionId,
+    [STATE_STORAGE_KEY]: state
+  });
+
+  updateButtonByAuthState({
+    ...storedInfo,
+    [AUTH_URL_STORAGE_KEY]: authUrl,
+    [SESSION_ID_STORAGE_KEY]: sessionId,
+    [STATE_STORAGE_KEY]: state
+  });
+  setStatus('授权地址已生成，正在打开授权页面。', 'success');
+  await chrome.tabs.create({ url: authUrl, active: true });
 }
 
 async function requestAccountInfo(email) {
@@ -241,35 +276,32 @@ startAuthBtn.addEventListener('click', async () => {
       return;
     }
 
-    setStatus('正在请求授权地址...');
-    await clearGeneratedAuthInfo();
-    const data = await requestAuthUrl(storedInfo[PROXY_ID_STORAGE_KEY]);
-    const authUrl = data && data.data ? data.data.auth_url : '';
-    const sessionId = data && data.data ? data.data.session_id : '';
-    const state = extractStateFromAuthUrl(authUrl);
-
-    if (!authUrl || !sessionId || !state) {
-      throw new Error('授权地址数据不完整。');
-    }
-
-    await chrome.storage.local.set({
-      [AUTH_URL_STORAGE_KEY]: authUrl,
-      [SESSION_ID_STORAGE_KEY]: sessionId,
-      [STATE_STORAGE_KEY]: state
-    });
-
-    updateButtonByAuthState({
-      ...storedInfo,
-      [AUTH_URL_STORAGE_KEY]: authUrl,
-      [SESSION_ID_STORAGE_KEY]: sessionId,
-      [STATE_STORAGE_KEY]: state
-    });
-    setStatus('授权地址已生成，正在打开授权页面。', 'success');
-    await chrome.tabs.create({ url: authUrl, active: true });
+    await startAuthorizationFlow(storedInfo);
   } catch (error) {
     console.error('授权请求失败:', error);
     setStatus(error.message || '授权请求失败。', 'error');
   } finally {
+    startAuthBtn.disabled = false;
+  }
+});
+
+reauthAccountBtn.addEventListener('click', async () => {
+  reauthAccountBtn.disabled = true;
+  startAuthBtn.disabled = true;
+
+  try {
+    const storedInfo = await chrome.storage.local.get([
+      ACCOUNT_STORAGE_KEY,
+      ID_STORAGE_KEY,
+      NAME_STORAGE_KEY,
+      PROXY_ID_STORAGE_KEY
+    ]);
+    await startAuthorizationFlow(storedInfo, '正在重新请求授权地址...');
+  } catch (error) {
+    console.error('重新授权请求失败:', error);
+    setStatus(error.message || '重新授权请求失败。', 'error');
+  } finally {
+    reauthAccountBtn.disabled = false;
     startAuthBtn.disabled = false;
   }
 });
