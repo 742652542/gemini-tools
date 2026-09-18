@@ -37,18 +37,14 @@ TASK_QUEUE: "queue.Queue[str]" = queue.Queue()
 WORKER_THREADS = 100
 DEBUG = True
 CALLBACK_TIMEOUT = 4 * 60
-# DEFAULT_CALLBACK_URL = "https://ixspy.com/api/gemini/receive-result"
-DEFAULT_CALLBACK_URL = ""
+DEFAULT_CALLBACK_URL = "https://ixspy.com/api/gemini/receive-result"
+# DEFAULT_CALLBACK_URL = ""
 
-# UPSTREAM_BASE_URL = "https://ent.univibe.cc/v1"
-# UPSTREAM_API_KEY = "sk-JhlucoBFXUENDlVmCY0AqaWPDWt2389NWAsKM2PdxBiBpyuI"
-
-# UPSTREAM_BASE_URL = "http://127.0.0.1:8080/v1"
-UPSTREAM_API_KEY = "sk-458e3b43a4d1fdd329951bb62d812c91aaf77e3b8bc262c051f177d3d6ebe5ef"
-
-UPSTREAM_BASE_URL = "http://152.53.127.53:8080/v1"
+UPSTREAM_BASE_URL = "http://127.0.0.1:8080/v1"
+# UPSTREAM_BASE_URL = "http://152.53.127.53:8080/v1"
 UPSTREAM_API_KEY = "sk-e0db58439e138c9a5c823c3d58ad80c0ca122b155e8607ad0cd2d40283639e2b"
-
+# UPSTREAM_BASE_URL = "http://192.168.7.163:8090/v1"
+# UPSTREAM_API_KEY = "sk-458e3b43a4d1fdd329951bb62d812c91aaf77e3b8bc262c051f177d3d6ebe5ef"
 
 UPSTREAM_TIMEOUT = 3*60
 UPSTREAM_RETRY_TIMES = 2
@@ -57,18 +53,14 @@ RUNNING_COUNT = 0
 RUNNING_LOCK = threading.Lock()
 
 try:
-    with open("config.json", "r", encoding="utf-8") as f:
+    with (BASE_DIR / "config.json").open("r", encoding="utf-8") as f:
         _config = json.load(f)
     _s3 = _config.get("s3", {})
-    S3_ACCESS_KEY_ID = _s3.get("access_key_id")
-    S3_SECRET_ACCESS_KEY = _s3.get("secret_access_key")
-    S3_ENDPOINT_URL = _s3.get("endpoint_url")
-    S3_BUCKET_NAME = _s3.get("bucket_name")
+    S3_PROVIDERS = _s3.get("providers")
+    if not isinstance(S3_PROVIDERS, list) or not S3_PROVIDERS:
+        S3_PROVIDERS = [_s3] if _s3.get("endpoint_url") else []
 except Exception:
-    S3_ACCESS_KEY_ID = None
-    S3_SECRET_ACCESS_KEY = None
-    S3_ENDPOINT_URL = None
-    S3_BUCKET_NAME = None
+    S3_PROVIDERS = []
 
 
 class CreateTaskBody(BaseModel):
@@ -78,6 +70,7 @@ class CreateTaskBody(BaseModel):
     ratios: Optional[str] = "1:1"
     image: Optional[Any] = None
     output_format: str = "png"
+    quality: str = "auto"
     model: str = "gpt-image-2"
     callback_url: Optional[str] = None
     source: Optional[str] = "chatgpt_image"
@@ -87,7 +80,7 @@ class TaskRequest(BaseModel):
     action: str = "generate_image"
     prompt: str
     source: str = "gemini"
-    model: str = "Pro"
+    model: str = "gpt-image-2"
     image: Optional[Any] = None
     client_id: Optional[str] = None
     url_id: Optional[str] = None
@@ -95,6 +88,7 @@ class TaskRequest(BaseModel):
     ratios: Optional[str] = "1:1"
     size: Optional[str] = None
     output_format: Optional[str] = "png"
+    quality: Optional[str] = "auto"
 
 
 def _task_file(directory: Path, task_id: str) -> Path:
@@ -254,23 +248,39 @@ def _get_image_mime(image_data: bytes) -> str:
 
 
 def _upload_to_s3(file_path: str, object_name: str) -> Optional[str]:
-    if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL, S3_BUCKET_NAME]):
-        return None
+    for provider in S3_PROVIDERS:
+        if not all([
+            provider.get("access_key_id"),
+            provider.get("secret_access_key"),
+            provider.get("endpoint_url"),
+            provider.get("bucket_name"),
+            provider.get("public_base_url"),
+        ]):
+            continue
 
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=S3_ACCESS_KEY_ID,
-        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-        endpoint_url=S3_ENDPOINT_URL,
-        region_name="ap-southeast-1",
-        verify=False,
-        config=Config(s3={"addressing_style": "path"}),
-    )
-    try:
-        s3_client.upload_file(file_path, S3_BUCKET_NAME, object_name)
-        return f"https://d.ixspy.cn/{object_name}"
-    except Exception:
-        return None
+        endpoint_url = provider["endpoint_url"]
+        is_aliyun = "aliyuncs.com" in endpoint_url
+        try:
+            config_options = {
+                "s3": {"addressing_style": "virtual" if is_aliyun else "path"},
+            }
+            if is_aliyun:
+                config_options["request_checksum_calculation"] = "when_required"
+            s3_client = boto3.client(
+                "s3",
+                aws_access_key_id=provider["access_key_id"],
+                aws_secret_access_key=provider["secret_access_key"],
+                endpoint_url=endpoint_url,
+                region_name="cn-hangzhou" if is_aliyun else "ap-southeast-1",
+                verify=False,
+                config=Config(**config_options),
+            )
+            s3_client.upload_file(file_path, provider["bucket_name"], object_name)
+            return f"{provider['public_base_url'].rstrip('/')}/{object_name.lstrip('/')}"
+        except Exception:
+            continue
+
+    return None
 
 
 def _resolve_size_by_ratios(ratios: Any) -> str:
@@ -320,6 +330,20 @@ def _sanitize_size(size: Any, ratios: Any) -> str:
     return _resolve_size_by_ratios(ratios)
 
 
+ALLOWED_IMAGE_MODELS = {
+    "gpt-image-2",
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+}
+
+
+def _normalize_image_model(model: Any) -> str:
+    value = str(model or "").strip().lower()
+    if value in ALLOWED_IMAGE_MODELS:
+        return value
+    return "gpt-image-2"
+
+
 def _run_generate_image(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     if not UPSTREAM_BASE_URL or not UPSTREAM_API_KEY:
         return {"success": False, "error": "fallback 配置缺失"}
@@ -327,10 +351,11 @@ def _run_generate_image(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]
     size = _sanitize_size(payload.get("size"), payload.get("ratios", "1:1"))
 
     req_payload = {
-        "model": "gpt-image-2",
+        "model": _normalize_image_model(payload.get("model")),
         "prompt": payload.get("prompt") or "",
         "size": size,
         "output_format": payload.get("output_format") or "png",
+        "quality": payload.get("quality") or "auto",
     }
 
     headers = {"Authorization": f"Bearer {UPSTREAM_API_KEY}"}
@@ -365,6 +390,7 @@ def _run_generate_image(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]
                         "prompt": req_payload["prompt"],
                         "size": req_payload["size"],
                         "output_format": req_payload["output_format"],
+                        "quality": req_payload["quality"],
                         "response_format": "b64_json",
                         "images": [{"image_url": image_ref} for image_ref in image_refs],
                     }
@@ -655,6 +681,7 @@ def create_task(body: CreateTaskBody) -> Dict[str, Any]:
 
     task_id = f"img_{uuid.uuid4().hex[:16]}"
     payload = body.dict()
+    payload["model"] = _normalize_image_model(body.model)
     payload["task_id"] = task_id
     payload["created_at"] = int(time.time())
     payload["status"] = "queued"
@@ -700,7 +727,7 @@ def get_task_status(task_id: str) -> Dict[str, Any]:
 @app.post("/api/ask")
 async def send_task(request: TaskRequest) -> Dict[str, Any]:
     action = request.action or "generate_image"
-    model = request.model or "Pro"
+    model = _normalize_image_model(request.model)
     is_continue = bool(request.client_id)
     prompt = (request.prompt or "").strip()
 
@@ -725,6 +752,7 @@ async def send_task(request: TaskRequest) -> Dict[str, Any]:
         "ratios": request.ratios,
         "size": request.size,
         "output_format": request.output_format or "png",
+        "quality": request.quality or "auto",
         "updated_at": int(time.time()),
     }
 
