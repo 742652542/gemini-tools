@@ -444,7 +444,48 @@ function isImageCandidateTurn(turnSection) {
 }
 
 function getLatestImageAssistantTurnSection() {
-  return getLatestAssistantTurnSectionMatching((turn) => isImageCandidateTurn(turn));
+  const regularTurn = getLatestAssistantTurnSectionMatching((turn) => isImageCandidateTurn(turn));
+  if (regularTurn) return regularTurn;
+
+  // 部分新版页面会把 agent activity 和最终图片拆成相邻的两个区块。
+  // 仅在原有区块识别失败时，查找同一轮内且位于 agent 起点之后的图片区域，
+  // 避免把 agent 起点之前的用户上传图片当作生成结果。
+  const imageSurfaces = Array.from(
+    document.querySelectorAll([
+      '[data-testid="generated-image-gallery"]',
+      '[data-testid="generated-image-preview"]',
+      '[data-testid="image-gen-loading-state"]',
+      '[data-testid="image-gen-loading-state-frame"]',
+      '[data-testid="image-gen-loading-state-headline"]'
+    ].join(', '))
+  );
+  const latestAssistantTurn = getLatestAssistantTurnSection();
+  const latestAssistantIdentity = getTurnIdentity(latestAssistantTurn);
+
+  for (let i = imageSurfaces.length - 1; i >= 0; i--) {
+    const surface = imageSurfaces[i];
+    const keyedTurn =
+      surface.closest('[data-turn-key]') ||
+      surface.closest('[data-content-search-turn-key]');
+    if (!keyedTurn) continue;
+
+    const surfaceTurnIdentity =
+      keyedTurn.getAttribute('data-turn-key') ||
+      keyedTurn.getAttribute('data-content-search-turn-key') ||
+      '';
+    if (latestAssistantIdentity && surfaceTurnIdentity !== latestAssistantIdentity) continue;
+
+    const markers = Array.from(keyedTurn.querySelectorAll('[data-chatgpt-agent-turn-start]'));
+    const isAfterAgentStart = markers.some((marker) => (
+      marker.compareDocumentPosition(surface) & Node.DOCUMENT_POSITION_FOLLOWING
+    ));
+    if (!isAfterAgentStart) continue;
+
+    const imageRoot = surface.closest('[data-testid="generated-image-gallery"]') || surface;
+    return imageRoot.parentElement || imageRoot;
+  }
+
+  return null;
 }
 
 function hasImageInAssistantMessage(node) {
