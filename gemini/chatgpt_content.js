@@ -273,9 +273,27 @@ function getStopButton() {
 }
 
 function getAssistantTurnSections() {
-  return Array.from(
-    document.querySelectorAll('section[data-testid^="conversation-turn-"][data-turn="assistant"]')
+  const legacyTurnSelector = 'section[data-testid^="conversation-turn-"][data-turn="assistant"]';
+  const turnEntries = document.querySelectorAll(
+    `${legacyTurnSelector}, [data-chatgpt-agent-turn-start]`
   );
+  const turns = [];
+  const seen = new Set();
+
+  turnEntries.forEach((entry) => {
+    // 新版页面用隐藏的 agent-turn-start 节点标记 assistant 回复起点；
+    // 它的父节点就是当前回复区块。若同时存在旧版 section，仍优先复用旧区块。
+    const turn = entry.matches(legacyTurnSelector)
+      ? entry
+      : entry.closest(legacyTurnSelector) || entry.parentElement;
+
+    if (turn && !seen.has(turn)) {
+      seen.add(turn);
+      turns.push(turn);
+    }
+  });
+
+  return turns;
 }
 
 function getLatestAssistantTurnSection() {
@@ -346,7 +364,8 @@ function getMeaningfulAssistantTextFromTurn(turnSection) {
 
   const markdownNode =
     turnSection.querySelector('[data-message-author-role="assistant"] .markdown') ||
-    turnSection.querySelector('[data-message-author-role="assistant"]');
+    turnSection.querySelector('[data-message-author-role="assistant"]') ||
+    turnSection.querySelector('.markdown');
 
   if (markdownNode) {
     const directText = normalizeAssistantText(markdownNode.textContent || '');
@@ -363,7 +382,16 @@ function getMeaningfulAssistantTextFromTurn(turnSection) {
 
 function getTurnIdentity(turnSection) {
   if (!turnSection) return '';
-  return turnSection.getAttribute('data-turn-id') || turnSection.getAttribute('data-testid') || '';
+  const directIdentity =
+    turnSection.getAttribute('data-turn-id') ||
+    turnSection.getAttribute('data-testid');
+  if (directIdentity) return directIdentity;
+
+  const keyedTurn = turnSection.closest('[data-turn-key]');
+  if (keyedTurn) return keyedTurn.getAttribute('data-turn-key') || '';
+
+  const searchableTurn = turnSection.closest('[data-content-search-turn-key]');
+  return searchableTurn ? searchableTurn.getAttribute('data-content-search-turn-key') || '' : '';
 }
 
 function getAssistantMessages() {
@@ -397,7 +425,8 @@ function getLastAssistantHtmlContent() {
 
   const markdownNode =
     turn.querySelector('[data-message-author-role="assistant"] .markdown') ||
-    turn.querySelector('[data-message-author-role="assistant"]');
+    turn.querySelector('[data-message-author-role="assistant"]') ||
+    turn.querySelector('.markdown');
   if (!markdownNode) return '';
 
   return markdownNode.innerHTML || '';
@@ -590,9 +619,12 @@ async function imageUrlToBase64(url) {
 function getImageCandidatesFromTurn(turnSection) {
   if (!turnSection) return [];
   const selectors = [
+    '[data-testid="generated-image-preview"] img',
+    '[data-testid="generated-image-gallery"] img',
     '[class*="group/imagegen-image"] img',
     'img[alt*="已生成图片"]',
     'img[alt*="Generated image"]',
+    'img[src^="data:image/"]',
     'img[src^="blob:"]',
     'img[src*="oaiusercontent.com"]'
   ];
@@ -628,6 +660,8 @@ function getImageCandidatesFromTurn(turnSection) {
 function hasImageTransitionSurface(turnSection) {
   if (!turnSection) return false;
   return !!(
+    turnSection.querySelector('[data-testid="generated-image-gallery"]') ||
+    turnSection.querySelector('[data-testid="generated-image-preview"]') ||
     turnSection.querySelector('[class*="group/imagegen-image"]') ||
     turnSection.querySelector('[id^="image-"]') ||
     turnSection.querySelector('button[aria-label*="喜欢此图片"]') ||
