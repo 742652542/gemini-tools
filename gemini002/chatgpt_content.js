@@ -1507,7 +1507,7 @@ async function waitForLibraryBatchDelete(previousStartedCount, previousCompleted
     if (allStartedRequestsCompleted && libraryDeleteRequestActiveCount === 0) {
       if (!idleSince) idleSince = Date.now();
       // ChatGPT 会把一次全选删除拆成多个请求；连续静默后才认为本轮全部结束。
-      if (Date.now() - idleSince >= 3000) {
+      if (Date.now() - idleSince >= 10000) {
         if (failureReason) throw new Error(failureReason);
         return true;
       }
