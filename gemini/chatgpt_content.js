@@ -1437,56 +1437,16 @@ async function scrollLibraryPageBeforeSelectAll() {
 
   updateLibraryCleanupStatus('↕️ 正在向下翻页 5 次以加载文件...');
   scrollContainer.scrollTop = 0;
-  await sleep(300);
+  await sleep(1000);
   for (let page = 1; page <= 5; page += 1) {
     const pageDistance = Math.max(scrollContainer.clientHeight * 0.9, 600);
     scrollContainer.scrollTop += pageDistance;
-    await sleep(500);
+    updateLibraryCleanupStatus(`↕️ 正在加载第 ${page}/5 页...`);
+    await sleep(2000);
   }
+  await sleep(1000);
   scrollContainer.scrollTop = 0;
-  await sleep(500);
-}
-
-function getLibraryModifiedTimeSortButton() {
-  const header = document.querySelector('[data-testid="artifacts-surface-library-list-header"]');
-  if (!header) return null;
-  return Array.from(header.querySelectorAll('button')).find((button) => {
-    const text = normalizedElementText(button);
-    return text.startsWith('修改时间') || text.startsWith('modified');
-  }) || null;
-}
-
-function isLibraryModifiedTimeAscending(button) {
-  if (!button || button.getAttribute('aria-pressed') !== 'true') return false;
-  const icon = button.querySelector('svg');
-  if (!icon) return true;
-  const iconClass = icon.getAttribute('class') || '';
-  const transform = window.getComputedStyle(icon).transform || '';
-  return !/rotate-180/i.test(iconClass) && !/^matrix\(-1,\s*0,\s*0,\s*-1/i.test(transform);
-}
-
-async function ensureLibraryModifiedTimeAscending() {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const sortButton = getLibraryModifiedTimeSortButton();
-    if (!sortButton) throw new Error('未找到资料库的“修改时间”排序按钮');
-    if (isLibraryModifiedTimeAscending(sortButton)) return true;
-    clickElementOnce(sortButton);
-    await sleep(1200);
-  }
-
-  throw new Error('无法将资料库切换为修改时间正序');
-}
-
-function getLibraryRowModifiedTimeText(row) {
-  if (!row) return '';
-  const cells = Array.from(row.querySelectorAll(':scope > [role="gridcell"]'));
-  return cells.length >= 3 ? (cells[2].textContent || '').replace(/\s+/g, ' ').trim() : '';
-}
-
-function getFirstLibraryModifiedTimeText() {
-  return getLibraryRowModifiedTimeText(
-    document.querySelector('[data-page-table-selectable-row="true"]')
-  );
+  await sleep(1000);
 }
 
 function isCheckboxSelected(element) {
@@ -1629,10 +1589,6 @@ async function runLibraryCleanup() {
         break;
       }
       consecutiveEmptyChecks = 0;
-
-      await ensureLibraryModifiedTimeAscending();
-      const firstModifiedTime = getFirstLibraryModifiedTimeText();
-      updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：首条修改时间 ${firstModifiedTime || '未知'}，继续清理...`);
 
       await scrollLibraryPageBeforeSelectAll();
 
