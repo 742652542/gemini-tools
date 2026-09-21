@@ -42,10 +42,6 @@ const CHATGPT_WORK_CHECK_PROMPTS = [
     "帮我看一下当前热门的新闻",
     "帮我查询一下今天的天气"
 ];
-const CHATGPT_LIBRARY_CLEANUP_URL = "https://chatgpt.com/library?tab=all";
-const CHATGPT_LIBRARY_CLEANUP_INTERVAL_TICKS = 12 * 60 / 5;
-const CHATGPT_LIBRARY_CLEANUP_MAX_ROUNDS = 6;
-const CHATGPT_LIBRARY_CLEANUP_TIMEOUT = 30 * 60 * 1000;
 
 function captureAuthCallbackUrl(url) {
     if (!url) return;
@@ -101,16 +97,6 @@ let chatgptWorkCheckInProgress = false;
 let chatgptWorkCheckTabId = null;
 let chatgptWorkCheckLoadListener = null;
 let chatgptWorkCheckTimeoutId = null;
-let chatgptWorkCheckLoadCancel = null;
-let chatgptWorkCheckInterruptedByImage = false;
-let chatgptLibraryCleanupTickCount = 0;
-let chatgptLibraryCleanupSequence = 0;
-let chatgptLibraryCleanupInProgress = false;
-let chatgptLibraryCleanupTabId = null;
-let chatgptLibraryCleanupLoadListener = null;
-let chatgptLibraryCleanupTimeoutId = null;
-let chatgptLibraryCleanupLoadCancel = null;
-let chatgptLibraryCleanupInterruptedByImage = false;
 
 function clearUsageRuntime() {
     if (usageLoadListener) {
@@ -200,26 +186,22 @@ async function postChatgptWorkCheckResult(sequence, success) {
 
 function waitForTabComplete(tabId, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (error = null) => {
-            if (settled) return;
-            settled = true;
+        const timeoutId = setTimeout(() => {
+            if (chatgptWorkCheckLoadListener === onTabReady) {
+                chrome.tabs.onUpdated.removeListener(onTabReady);
+                chatgptWorkCheckLoadListener = null;
+            }
+            reject(new Error("ChatGPT Work check page load timed out"));
+        }, timeoutMs);
+
+        const finish = () => {
             clearTimeout(timeoutId);
             if (chatgptWorkCheckLoadListener === onTabReady) {
                 chrome.tabs.onUpdated.removeListener(onTabReady);
                 chatgptWorkCheckLoadListener = null;
             }
-            if (chatgptWorkCheckLoadCancel === cancelWait) {
-                chatgptWorkCheckLoadCancel = null;
-            }
-            if (error) reject(error);
-            else resolve();
+            resolve();
         };
-
-        const cancelWait = () => finish(new Error("ChatGPT Work check interrupted"));
-        const timeoutId = setTimeout(() => {
-            finish(new Error("ChatGPT Work check page load timed out"));
-        }, timeoutMs);
 
         function onTabReady(updatedTabId, changeInfo) {
             if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
@@ -227,7 +209,6 @@ function waitForTabComplete(tabId, timeoutMs = 30000) {
         }
 
         chatgptWorkCheckLoadListener = onTabReady;
-        chatgptWorkCheckLoadCancel = cancelWait;
         chrome.tabs.onUpdated.addListener(onTabReady);
 
         chrome.tabs.get(tabId, (tab) => {
@@ -263,14 +244,9 @@ async function runChatgptWorkCheck() {
         return { success: false, skipped: true, reason: "已有检查进行中" };
     }
 
-    if (chatgptLibraryCleanupInProgress) {
-        console.log("[ChatGPT Work Check] 资料库清理正在进行，跳过本轮");
-        return { success: false, skipped: true, reason: "资料库清理正在进行" };
-    }
-
-    if (taskRegistry.size > 0) {
-        console.log("[ChatGPT Work Check] 当前有生成任务执行中，延后检查");
-        return { success: false, skipped: true, reason: "当前有生成任务执行中" };
+    if (hasRunningChatgptTask()) {
+        console.log("[ChatGPT Work Check] 当前有 ChatGPT 任务执行中，延后到下个 5 分钟检查");
+        return { success: false, skipped: true, reason: "当前有 ChatGPT 任务执行中" };
     }
 
     chatgptWorkCheckInProgress = true;
@@ -292,19 +268,12 @@ async function runChatgptWorkCheck() {
         await waitForTabComplete(tab.id);
         await sleepForChatgptWorkCheck(3000);
         const response = await sendChatgptWorkCheckMessage(tab.id, sequence);
-        if (chatgptWorkCheckInterruptedByImage) {
-            throw new Error("ChatGPT Work check interrupted by image task");
-        }
         if (!response || response.success !== true) {
             throw new Error(response && response.error ? response.error : "ChatGPT Work check content script failed");
         }
         await postChatgptWorkCheckResult(sequence, true);
         return { success: true, sequence };
     } catch (error) {
-        if (chatgptWorkCheckInterruptedByImage) {
-            console.log(`[ChatGPT Work Check] 第 ${sequence} 次检查已被作图任务中断，等待完整下一周期`);
-            return { success: false, skipped: true, interrupted: true, sequence, reason: "被作图任务中断" };
-        }
         console.warn(`[ChatGPT Work Check] 第 ${sequence} 次检查失败:`, error);
         try {
             await postChatgptWorkCheckResult(sequence, false);
@@ -314,7 +283,6 @@ async function runChatgptWorkCheck() {
         return { success: false, sequence, error: error && error.message ? error.message : String(error) };
     } finally {
         cleanupChatgptWorkCheck();
-        chatgptWorkCheckInterruptedByImage = false;
     }
 }
 
@@ -326,173 +294,13 @@ function maybeRunChatgptWorkCheck() {
     chatgptWorkCheckTickCount += 1;
     if (chatgptWorkCheckTickCount < CHATGPT_WORK_CHECK_INTERVAL_TICKS) return;
 
-    if (taskRegistry.size > 0 || chatgptLibraryCleanupInProgress) {
-        console.log("[ChatGPT Work Check] 已到执行时间，但生成任务或资料库清理正在进行，保留下次重试");
+    if (hasRunningChatgptTask()) {
+        console.log("[ChatGPT Work Check] 已到 60 分钟，但 ChatGPT 任务正在执行，保留下次重试");
         return;
     }
 
     chatgptWorkCheckTickCount = 0;
     runChatgptWorkCheck();
-}
-
-function clearChatgptLibraryCleanupRuntime() {
-    if (chatgptLibraryCleanupLoadListener) {
-        chrome.tabs.onUpdated.removeListener(chatgptLibraryCleanupLoadListener);
-        chatgptLibraryCleanupLoadListener = null;
-    }
-
-    if (chatgptLibraryCleanupTimeoutId) {
-        clearTimeout(chatgptLibraryCleanupTimeoutId);
-        chatgptLibraryCleanupTimeoutId = null;
-    }
-}
-
-function cleanupChatgptLibraryCleanup() {
-    const tabId = chatgptLibraryCleanupTabId;
-    clearChatgptLibraryCleanupRuntime();
-    chatgptLibraryCleanupInProgress = false;
-    chatgptLibraryCleanupTabId = null;
-
-    if (tabId) {
-        chrome.tabs.remove(tabId, () => {
-            if (chrome.runtime.lastError) {}
-        });
-    }
-}
-
-function waitForChatgptLibraryTabComplete(tabId, timeoutMs = 30000) {
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (error = null) => {
-            if (settled) return;
-            settled = true;
-            if (chatgptLibraryCleanupTimeoutId) {
-                clearTimeout(chatgptLibraryCleanupTimeoutId);
-                chatgptLibraryCleanupTimeoutId = null;
-            }
-            if (chatgptLibraryCleanupLoadListener === onTabReady) {
-                chrome.tabs.onUpdated.removeListener(onTabReady);
-                chatgptLibraryCleanupLoadListener = null;
-            }
-            if (chatgptLibraryCleanupLoadCancel === cancelWait) {
-                chatgptLibraryCleanupLoadCancel = null;
-            }
-            if (error) reject(error);
-            else resolve();
-        };
-
-        const cancelWait = () => finish(new Error("ChatGPT library cleanup interrupted"));
-
-        function onTabReady(updatedTabId, changeInfo) {
-            if (updatedTabId !== tabId || changeInfo.status !== "complete") return;
-            finish();
-        }
-
-        chatgptLibraryCleanupTimeoutId = setTimeout(() => {
-            finish(new Error("ChatGPT library cleanup page load timed out"));
-        }, timeoutMs);
-        chatgptLibraryCleanupLoadListener = onTabReady;
-        chatgptLibraryCleanupLoadCancel = cancelWait;
-        chrome.tabs.onUpdated.addListener(onTabReady);
-
-        chrome.tabs.get(tabId, (tab) => {
-            if (chrome.runtime.lastError || !tab || tab.id !== tabId) return;
-            if (tab.status === "complete") finish();
-        });
-    });
-}
-
-function sendChatgptLibraryCleanupMessage(tabId) {
-    return Promise.race([
-        chrome.tabs.sendMessage(tabId, {
-            action: "run_library_cleanup",
-            max_rounds: CHATGPT_LIBRARY_CLEANUP_MAX_ROUNDS,
-            scheduled: true
-        }),
-        new Promise((_, reject) => {
-            chatgptLibraryCleanupTimeoutId = setTimeout(() => {
-                chatgptLibraryCleanupTimeoutId = null;
-                reject(new Error("ChatGPT library cleanup execution timed out"));
-            }, CHATGPT_LIBRARY_CLEANUP_TIMEOUT);
-        })
-    ]).finally(() => {
-        if (chatgptLibraryCleanupTimeoutId) {
-            clearTimeout(chatgptLibraryCleanupTimeoutId);
-            chatgptLibraryCleanupTimeoutId = null;
-        }
-    });
-}
-
-function isChatgptLibraryCleanupIdle() {
-    return taskRegistry.size === 0 &&
-        !usageCollectionInProgress &&
-        !chatgptWorkCheckInProgress &&
-        !chatgptLibraryCleanupInProgress;
-}
-
-async function runChatgptLibraryCleanup() {
-    if (!isChatgptLibraryCleanupIdle()) {
-        console.log("[ChatGPT Library Cleanup] 当前不空闲，跳过本轮");
-        return { success: false, skipped: true, reason: "当前有其他任务正在执行" };
-    }
-
-    chatgptLibraryCleanupInProgress = true;
-    const sequence = ++chatgptLibraryCleanupSequence;
-    console.log(`[ChatGPT Library Cleanup] 开始第 ${sequence} 次定时清理，最多 ${CHATGPT_LIBRARY_CLEANUP_MAX_ROUNDS} 轮`);
-
-    try {
-        const tab = await new Promise((resolve, reject) => {
-            chrome.tabs.create({ url: CHATGPT_LIBRARY_CLEANUP_URL, active: false }, (newTab) => {
-                if (chrome.runtime.lastError || !newTab || !newTab.id) {
-                    reject(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : "ChatGPT library tab create failed"));
-                    return;
-                }
-                resolve(newTab);
-            });
-        });
-
-        chatgptLibraryCleanupTabId = tab.id;
-        await waitForChatgptLibraryTabComplete(tab.id);
-        await sleepForChatgptWorkCheck(3000);
-        const response = await sendChatgptLibraryCleanupMessage(tab.id);
-        if (chatgptLibraryCleanupInterruptedByImage) {
-            throw new Error("ChatGPT library cleanup interrupted by image task");
-        }
-        if (!response || response.success !== true) {
-            throw new Error(response && (response.error || response.reason)
-                ? response.error || response.reason
-                : "ChatGPT library cleanup content script failed");
-        }
-        console.log(`[ChatGPT Library Cleanup] 第 ${sequence} 次清理完成:`, response);
-        return { ...response, sequence };
-    } catch (error) {
-        if (chatgptLibraryCleanupInterruptedByImage) {
-            console.log(`[ChatGPT Library Cleanup] 第 ${sequence} 次清理已被作图任务中断，等待完整下一周期`);
-            return { success: false, skipped: true, interrupted: true, sequence, reason: "被作图任务中断" };
-        }
-        console.warn(`[ChatGPT Library Cleanup] 第 ${sequence} 次清理失败:`, error);
-        return {
-            success: false,
-            sequence,
-            error: error && error.message ? error.message : String(error)
-        };
-    } finally {
-        cleanupChatgptLibraryCleanup();
-        chatgptLibraryCleanupInterruptedByImage = false;
-    }
-}
-
-function maybeRunChatgptLibraryCleanup() {
-    chatgptLibraryCleanupTickCount += 1;
-    if (chatgptLibraryCleanupTickCount < CHATGPT_LIBRARY_CLEANUP_INTERVAL_TICKS) return;
-
-    if (!isChatgptLibraryCleanupIdle()) {
-        console.log("[ChatGPT Library Cleanup] 已到 12 小时，但当前不空闲，保留到下个 5 分钟检查");
-        return;
-    }
-
-    chatgptLibraryCleanupTickCount = 0;
-    runChatgptLibraryCleanup();
 }
 
 function requestUsageSnapshot(tabId) {
@@ -589,16 +397,10 @@ function openUsageTabAndCollect() {
 function runUsageCollection(options = {}) {
     const allowChatgptWorkCheck = options.allowChatgptWorkCheck !== false;
     if (allowChatgptWorkCheck) {
-        // 资料库清理优先；清理启动后，本轮不会再启动 Work 检查。
-        maybeRunChatgptLibraryCleanup();
         maybeRunChatgptWorkCheck();
     }
 
     console.log(`[Usage] 触发轮询检查, inProgress=${usageCollectionInProgress}, taskCount=${taskRegistry.size}`);
-    if (chatgptLibraryCleanupInProgress || chatgptWorkCheckInProgress) {
-        console.log("[Usage] ChatGPT 定时清理或 Work 检查正在进行，跳过本轮");
-        return;
-    }
     if (usageCollectionInProgress) {
         console.log("[Usage] 已有采集进行中，跳过本轮");
         return;
@@ -621,7 +423,7 @@ function startUsagePolling() {
         clearInterval(usagePollingTimer);
     }
 
-    console.log("[Usage] 启动 usage 轮询：Gemini 每 5 分钟一次；ChatGPT Work 按原周期检查；资料库每 12 小时空闲清理且最多 6 轮");
+    console.log("[Usage] 启动 usage 轮询：Gemini 立即执行一次，之后每 5 分钟一次；ChatGPT Work 检查每 12 轮执行一次");
     runUsageCollection({ allowChatgptWorkCheck: false });
     usagePollingTimer = setInterval(() => runUsageCollection(), GEMINI_USAGE_INTERVAL_MS);
 }
@@ -867,36 +669,10 @@ startUsagePolling();
 // 2. 核心：任务处理与 Tab 管理 (已修改)
 // ==========================================
 
-function interruptScheduledChatgptAutomationForImageTask(task) {
-    if (!task || task.action !== "generate_image") return false;
-
-    let interrupted = false;
-    if (chatgptWorkCheckInProgress) {
-        interrupted = true;
-        chatgptWorkCheckInterruptedByImage = true;
-        chatgptWorkCheckTickCount = 0;
-        console.log("[ChatGPT Work Check] 收到作图任务，立即关闭 Work 检查标签并重置完整周期");
-        if (chatgptWorkCheckLoadCancel) chatgptWorkCheckLoadCancel();
-        cleanupChatgptWorkCheck();
-    }
-
-    if (chatgptLibraryCleanupInProgress) {
-        interrupted = true;
-        chatgptLibraryCleanupInterruptedByImage = true;
-        chatgptLibraryCleanupTickCount = 0;
-        console.log("[ChatGPT Library Cleanup] 收到作图任务，立即关闭清理标签并重置 12 小时周期");
-        if (chatgptLibraryCleanupLoadCancel) chatgptLibraryCleanupLoadCancel();
-        cleanupChatgptLibraryCleanup();
-    }
-
-    return interrupted;
-}
-
 async function handleGenerateTask(task) {
     const taskId = task.task_id;
     const taskSource = task.source === "chatgpt" ? "chatgpt" : "gemini";
     const targetUrl = taskSource === "chatgpt" ? "https://chatgpt.com/" : "https://gemini.google.com/app";
-    interruptScheduledChatgptAutomationForImageTask(task);
     console.log(`🚀 [Task: ${taskId}] 收到新任务，准备分发到任务页...`);
     console.log(`🧭 [Task: ${taskId}] 来源: ${taskSource}, 目标页面: ${targetUrl}`);
 
@@ -1319,17 +1095,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
 
     if (chatgptWorkCheckTabId && tabId === chatgptWorkCheckTabId) {
-        if (chatgptWorkCheckLoadCancel) chatgptWorkCheckLoadCancel();
         clearChatgptWorkCheckRuntime();
         chatgptWorkCheckInProgress = false;
         chatgptWorkCheckTabId = null;
-    }
-
-    if (chatgptLibraryCleanupTabId && tabId === chatgptLibraryCleanupTabId) {
-        if (chatgptLibraryCleanupLoadCancel) chatgptLibraryCleanupLoadCancel();
-        clearChatgptLibraryCleanupRuntime();
-        chatgptLibraryCleanupInProgress = false;
-        chatgptLibraryCleanupTabId = null;
     }
 });
 

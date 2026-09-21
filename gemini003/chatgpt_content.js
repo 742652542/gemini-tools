@@ -6,10 +6,13 @@ let imageReplyFailureText = '';
 let libraryDeleteRequestStartedCount = 0;
 let libraryDeleteRequestCompletedCount = 0;
 let libraryDeleteRequestActiveCount = 0;
+let libraryDeleteRequestFailedCount = 0;
+let libraryDeleteRequestLastFailureStatus = 0;
 let libraryCleanupRunning = false;
 
 const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/library?tab=all';
 const LIBRARY_CLEANUP_STORAGE_KEY = 'chatgpt_library_cleanup_active';
+const LIBRARY_CLEANUP_RELOAD_COUNT_KEY = 'chatgpt_library_cleanup_reload_count';
 
 const injectedScript = document.createElement('script');
 injectedScript.src = chrome.runtime.getURL('chatgpt_injected.js');
@@ -37,6 +40,10 @@ window.addEventListener('message', (event) => {
     } else if (event.data.phase === 'complete') {
       libraryDeleteRequestCompletedCount += 1;
       libraryDeleteRequestActiveCount = Math.max(0, libraryDeleteRequestActiveCount - 1);
+      if (event.data.status < 200 || event.data.status >= 300) {
+        libraryDeleteRequestFailedCount += 1;
+        libraryDeleteRequestLastFailureStatus = event.data.status;
+      }
     }
     console.log('🗂️ 资料库批量删除请求状态', event.data, {
       started: libraryDeleteRequestStartedCount,
@@ -1278,15 +1285,6 @@ async function typeAndSendTest(
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'run_library_cleanup') {
-    runLibraryCleanup({ maxRounds: request.max_rounds }).then((result) => {
-      sendResponse(result);
-    }).catch((err) => {
-      sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
-    });
-    return true;
-  }
-
   if (request.action === 'type_and_send') {
     typeAndSend(
       request.text,
@@ -1475,12 +1473,31 @@ function findVisibleButtonByText(labels, root = document) {
   }) || null;
 }
 
-async function waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, timeoutMs = 120000) {
+function hasVisibleLibraryDeleteFailureNotice() {
+  const candidates = document.querySelectorAll(
+    '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="toast"]'
+  );
+  return Array.from(candidates).some((element) => {
+    if (!isVisibleElement(element)) return false;
+    const text = (element.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return text.includes('无法删除文件') || text.includes('failed to delete file');
+  });
+}
+
+async function waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, previousFailedCount, timeoutMs = 120000) {
   const startedAt = Date.now();
   const requestStartTimeoutMs = 15000;
   let idleSince = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
+    if (hasVisibleLibraryDeleteFailureNotice()) {
+      throw new Error('页面提示无法删除文件');
+    }
+    if (libraryDeleteRequestFailedCount > previousFailedCount) {
+      const statusText = libraryDeleteRequestLastFailureStatus || '网络错误';
+      throw new Error(`资料库删除请求失败（HTTP ${statusText}）`);
+    }
+
     const hasStarted = libraryDeleteRequestStartedCount > previousStartedCount;
     const hasCompleted = libraryDeleteRequestCompletedCount > previousCompletedCount;
 
@@ -1508,17 +1525,39 @@ function updateLibraryCleanupStatus(message) {
   console.log(`[资料库清理] ${message}`);
 }
 
-async function runLibraryCleanup(options = {}) {
+function isRecoverableLibraryCleanupError(errorMessage) {
+  return [
+    '等待资料库列表加载超时',
+    '未找到资料库的“选择全部”复选框',
+    '等待文件选择完成超时',
+    '全选后未找到页面底部的删除按钮',
+    '检测到残留删除确认框',
+    '未找到删除确认框中的删除按钮',
+    '页面提示无法删除文件',
+    '资料库删除请求失败',
+    '确认删除后未检测到 delete-batch 请求',
+    '等待资料库批量删除请求完成超时',
+    '删除请求完成，但资料库列表未及时刷新'
+  ].some((message) => errorMessage.includes(message));
+}
+
+function reloadLibraryCleanupAndResume(errorMessage) {
+  const previousReloadCount = Number(sessionStorage.getItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY)) || 0;
+  const reloadCount = previousReloadCount + 1;
+  const reloadDelay = Math.min(1000 + (reloadCount - 1) * 500, 5000);
+
+  sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
+  sessionStorage.setItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY, String(reloadCount));
+  updateLibraryCleanupStatus(`🔄 ${errorMessage}，正在刷新页面后继续（第 ${reloadCount} 次恢复）...`);
+  setTimeout(() => window.location.reload(), reloadDelay);
+}
+
+async function runLibraryCleanup() {
   if (libraryCleanupRunning) {
-    return { success: false, skipped: true, reason: '已有资料库清理正在进行' };
+    return;
   }
   libraryCleanupRunning = true;
-  const requestedMaxRounds = Number(options.maxRounds);
-  const maxRounds = Number.isFinite(requestedMaxRounds) && requestedMaxRounds > 0
-    ? Math.floor(requestedMaxRounds)
-    : Number.POSITIVE_INFINITY;
   let completedRounds = 0;
-  let stopReason = '';
 
   const cleanupButton = document.getElementById('btn-library-cleanup');
   if (cleanupButton) cleanupButton.disabled = true;
@@ -1529,19 +1568,12 @@ async function runLibraryCleanup(options = {}) {
     if (window.location.hostname !== 'chatgpt.com' || window.location.pathname !== '/library' || new URLSearchParams(window.location.search).get('tab') !== 'all') {
       updateLibraryCleanupStatus('↗️ 正在打开资料库...');
       window.location.assign(CHATGPT_LIBRARY_URL);
-      return { success: true, navigating: true, completedRounds: 0 };
+      return;
     }
 
     let round = 0;
     let consecutiveEmptyChecks = 0;
     while (sessionStorage.getItem(LIBRARY_CLEANUP_STORAGE_KEY) === '1') {
-      if (completedRounds >= maxRounds) {
-        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
-        stopReason = 'max_rounds';
-        updateLibraryCleanupStatus(`✅ 已达到本次上限 ${maxRounds} 轮，等待下次定时清理`);
-        break;
-      }
-
       round += 1;
       updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：等待文件列表加载...`);
 
@@ -1558,7 +1590,7 @@ async function runLibraryCleanup(options = {}) {
           continue;
         }
         sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
-        stopReason = 'empty';
+        sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
         updateLibraryCleanupStatus(`✅ 清理完成，共执行 ${completedRounds} 轮`);
         break;
       }
@@ -1587,7 +1619,13 @@ async function runLibraryCleanup(options = {}) {
         if (dialog && isVisibleElement(dialog)) return null;
         return findVisibleButtonByText(['删除', 'Delete']);
       }, 10000);
-      if (!deleteButton) throw new Error('全选后未找到页面底部的删除按钮');
+      if (!deleteButton) {
+        const staleDialog = Array.from(document.querySelectorAll(
+          '[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]'
+        )).find(isVisibleElement);
+        if (staleDialog) throw new Error('检测到残留删除确认框');
+        throw new Error('全选后未找到页面底部的删除按钮');
+      }
 
       updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：已全选，正在请求删除...`);
       const selectedRowIds = getSelectedLibraryRowIds();
@@ -1606,9 +1644,10 @@ async function runLibraryCleanup(options = {}) {
 
       const previousStartedCount = libraryDeleteRequestStartedCount;
       const previousCompletedCount = libraryDeleteRequestCompletedCount;
+      const previousFailedCount = libraryDeleteRequestFailedCount;
       updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在页面上下文确认删除...`);
       await clickLibraryConfirmInPageContext();
-      await waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount);
+      await waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, previousFailedCount);
 
       const listRefreshed = await waitForCondition(() => {
         const stillSelected = document.querySelector(
@@ -1622,6 +1661,7 @@ async function runLibraryCleanup(options = {}) {
       if (!listRefreshed) throw new Error('删除请求完成，但资料库列表未及时刷新');
 
       completedRounds += 1;
+      sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
 
       updateLibraryCleanupStatus(`✅ 第 ${round} 轮删除完成，准备检查剩余文件...`);
       await waitForCondition(() => {
@@ -1630,16 +1670,17 @@ async function runLibraryCleanup(options = {}) {
       }, 10000);
       await sleep(1500);
     }
-    return { success: true, completedRounds, reason: stopReason || 'stopped' };
   } catch (err) {
-    sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
-    updateLibraryCleanupStatus(`❌ 清理失败: ${err && err.message ? err.message : String(err)}`);
+    const errorMessage = err && err.message ? err.message : String(err);
     console.error('❌ 资料库清理失败:', err);
-    return {
-      success: false,
-      completedRounds,
-      error: err && err.message ? err.message : String(err)
-    };
+    if (isRecoverableLibraryCleanupError(errorMessage)) {
+      reloadLibraryCleanupAndResume(errorMessage);
+      return;
+    }
+
+    sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+    sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
+    updateLibraryCleanupStatus(`❌ 清理失败: ${errorMessage}`);
   } finally {
     libraryCleanupRunning = false;
     const currentButton = document.getElementById('btn-library-cleanup');
@@ -1696,7 +1737,10 @@ function createPanel() {
 
   const libraryCleanupButton = document.getElementById('btn-library-cleanup');
   if (libraryCleanupButton) {
-    libraryCleanupButton.onclick = () => runLibraryCleanup();
+    libraryCleanupButton.onclick = () => {
+      sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
+      runLibraryCleanup();
+    };
   }
 
   if (sessionStorage.getItem(LIBRARY_CLEANUP_STORAGE_KEY) === '1') {
