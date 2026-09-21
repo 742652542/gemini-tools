@@ -1267,7 +1267,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
         // 额外缓冲：Gemini 前端渲染缩略图需要时间
         await new Promise(r => setTimeout(r, 5000));
-        // await sendPrompt(text);
+        await sendPrompt(text);
 
         // Step 6: 等待回答
         console.log(`3/5 等待回答... [Action: ${action}]`);
