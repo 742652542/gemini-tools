@@ -16,7 +16,7 @@ s.onload = function() { this.remove(); };
 // ==========================================
 
 /**
- * 等待图片上传完成信号 (来自 injected.js)
+ * 等待附件上传完成信号 (来自 injected.js)
  */
 function waitForUploadSuccess(timeoutMs = 600000) {
     return new Promise((resolve) => {
@@ -30,7 +30,7 @@ function waitForUploadSuccess(timeoutMs = 600000) {
         window.addEventListener('GEMINI_UPLOAD_COMPLETE', handler);
         const timer = setTimeout(() => {
             window.removeEventListener('GEMINI_UPLOAD_COMPLETE', handler);
-            console.warn("⚠️ 等待上传超时 (可能这次没发图片，或网络太慢)");
+            console.warn("⚠️ 等待上传超时 (附件可能未被支持，或网络太慢)");
             resolve(false); 
         }, timeoutMs);
     });
@@ -1214,9 +1214,12 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
        
         if (image) {
-            console.log("一共上传的图片数量: " + image.length + "张");
+            console.log("一共上传的附件数量: " + image.length + "个");
             for (let i = 0; i < image.length; i++) {
-                console.log("⏳ [2/5] 正在处理第 " + (i + 1) + " 张图片...");
+                const attachmentMime = extractMimeFromBase64(image[i]) || "image/png";
+                const attachmentType = attachmentMime.startsWith("video/") ? "视频" : "图片";
+                const attachmentName = attachmentType === "视频" ? `video ${i + 1}.mp4` : `image ${i + 1}.png`;
+                console.log("⏳ [2/5] 正在处理第 " + (i + 1) + " 个附件 (" + attachmentType + ")...");
                 if (log) log.innerText = "正在上传第 " + (i + 1) + "/" + image.length + " 张...";
         
                 // 1. 先创建监听 Promise (这步顺序是对的，要在动作发生前监听)
@@ -1225,8 +1228,8 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
                 // 2. 执行粘贴
                 // 【建议】粘贴前也加一个小缓冲，确保输入框是聚焦的
                 await new Promise(r => setTimeout(r, 1000)); 
-                console.log('image '+(i+1)+".png粘贴图片...");
-                await pasteImage(image[i],'image '+(i+1)+".png"); 
+                console.log(attachmentName + " 粘贴" + attachmentType + "...");
+                await pasteImage(image[i], attachmentName);
                 //间隔1秒 执行
                 const uploadTimer = setInterval(function(){
                     const agreeButton = document.querySelector('button[aria-label="同意（关闭对话框并同意免责声明）"]');
@@ -1241,11 +1244,11 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
                 // 3. 等待上传信号
                 const isUploaded = await uploadPromise;
-                if (!isUploaded) throw new Error("第 " + (i+1) + " 张图片上传超时");
+                if (!isUploaded) throw new Error("第 " + (i+1) + " 个附件上传超时");
                 clearInterval(uploadTimer);
 
 
-                console.log("✅ 第 " + (i + 1) + " 张上传完毕");
+                console.log("✅ 第 " + (i + 1) + " 个附件上传完毕");
         
                 // ============================================================
                 // 核心修复：这里必须加延迟！
@@ -1264,7 +1267,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
 
         // 额外缓冲：Gemini 前端渲染缩略图需要时间
         await new Promise(r => setTimeout(r, 5000));
-        await sendPrompt(text);
+        // await sendPrompt(text);
 
         // Step 6: 等待回答
         console.log(`3/5 等待回答... [Action: ${action}]`);

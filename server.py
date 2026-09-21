@@ -11,6 +11,7 @@ import os
 import time
 import glob
 import hashlib
+import mimetypes
 from datetime import datetime, timedelta
 import subprocess
 from collections import deque
@@ -232,8 +233,60 @@ class TaskRequest(BaseModel):
     source: str = "gemini"
     model: str
     image: Optional[object] = None
+    video: Optional[object] = None
     targetRatio: Optional[str] = None
     client_id: Optional[str] = None
+
+
+class MediaFetchError(Exception):
+    pass
+
+
+def normalize_media_items(value: object) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def is_http_url(value: object) -> bool:
+    return isinstance(value, str) and value.lower().startswith(("http://", "https://"))
+
+
+async def download_media_as_data_url(url: str, media_kind: str) -> str:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+
+        if not response.content:
+            raise MediaFetchError("empty response")
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if not content_type or content_type in {"application/octet-stream", "binary/octet-stream"}:
+            response_url = str(getattr(response, "url", "") or url)
+            content_type = (mimetypes.guess_type(response_url.split("?", 1)[0])[0] or "").lower()
+        if not content_type.startswith(f"{media_kind}/"):
+            raise MediaFetchError(f"unexpected content type: {content_type or 'unknown'}")
+
+        encoded = base64.b64encode(response.content).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except MediaFetchError:
+        raise
+    except Exception as e:
+        raise MediaFetchError(str(e)) from e
+
+
+async def prepare_task_media(images: object = None, videos: object = None) -> list:
+    prepared = []
+    for media_kind, values in (("video", videos), ("image", images)):
+        for value in normalize_media_items(values):
+            if is_http_url(value):
+                prepared.append(await download_media_as_data_url(value, media_kind))
+            else:
+                prepared.append(value)
+    return prepared
 
 # === [新增] 辅助函数：跨日期文件夹查找文件 ===
 def find_file_path(base_dir: str, task_id: str) -> Optional[str]:
@@ -689,6 +742,12 @@ async def send_task(request: TaskRequest):
     model = request.model    
     if not model:
         model = "Pro" 
+
+    try:
+        media = await prepare_task_media(request.image, request.video)
+    except MediaFetchError as e:
+        print(f"Failed to fetch CDN media: {e}")
+        return {"status": "error", "message": "服务器获取 cdn资源失败。"}
         
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     
@@ -700,7 +759,7 @@ async def send_task(request: TaskRequest):
         "model": model,
         "prompt": request.prompt,
         "source": request.source,
-        "image": request.image 
+        "image": media
         }
     elif action == "generate_text":
         task_payload = {
@@ -710,7 +769,7 @@ async def send_task(request: TaskRequest):
         "task_id": task_id,
         "prompt": request.prompt,
         "source": request.source,
-        "image": request.image 
+        "image": media
         }
     elif action == "generate_video":
         task_payload = {
@@ -720,7 +779,7 @@ async def send_task(request: TaskRequest):
         "task_id": task_id,
         "prompt": request.prompt,
         "source": request.source,
-        "image": request.image,
+        "image": media,
         "targetRatio": request.targetRatio
         }    
     else:

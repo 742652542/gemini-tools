@@ -33,7 +33,7 @@
             this.addEventListener('load', function() {
                 this._isGeminiUpload = false;
                 if (this.status === 200) {
-                    console.log("✅ [Injected] 图片上传服务器确认成功 (200 OK)");
+                    console.log("✅ [Injected] 附件上传服务器确认成功 (200 OK)");
                     // 广播事件给 content.js
                     // --- 监听 URL.createObjectURL (捕获 Blob 生成瞬间) ---
                     let blob_count = 0
@@ -41,7 +41,7 @@
                         const url = originalCreateObjectURL.apply(this, arguments);
                         console.log("🔨 [Injected] 生成了新的 Blob URL:", url);
                         // 这里通常不需要判断 url 字符串包含什么，因为刚生成的肯定符合当前域
-                        // 如果你想过滤，可以判断 blob.type (例如是否为 image/png)
+                        // 图片会生成多个预览 Blob；视频只需等待首个视频 Blob。
                         if (blob && blob.type && blob.type.startsWith('image/')) {
                             blob_count  += 1
                             console.log("📷 捕获到图片 Blob 生成:", blob_count);
@@ -50,7 +50,9 @@
                             if  (blob_count > 1) {
                                 window.dispatchEvent(new CustomEvent('GEMINI_UPLOAD_COMPLETE'));
                             }
-                           
+                        } else if (blob && blob.type && blob.type.startsWith('video/')) {
+                            console.log("🎬 捕获到视频 Blob 生成:", blob.type);
+                            window.dispatchEvent(new CustomEvent('GEMINI_UPLOAD_COMPLETE'));
                         }
 
                         return url;
