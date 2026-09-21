@@ -1482,27 +1482,35 @@ async function waitForLibraryBatchDelete(previousStartedCount, previousCompleted
   const startedAt = Date.now();
   const requestStartTimeoutMs = 15000;
   let idleSince = 0;
+  let failureReason = '';
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (hasVisibleLibraryDeleteFailureNotice()) {
-      throw new Error('页面提示无法删除文件');
+    if (!failureReason && hasVisibleLibraryDeleteFailureNotice()) {
+      failureReason = '页面提示无法删除文件';
+      updateLibraryCleanupStatus('⚠️ 检测到删除失败，正在等待本轮其他删除请求完成...');
     }
-    if (libraryDeleteRequestFailedCount > previousFailedCount) {
+    if (!failureReason && libraryDeleteRequestFailedCount > previousFailedCount) {
       const statusText = libraryDeleteRequestLastFailureStatus || '网络错误';
-      throw new Error(`资料库删除请求失败（HTTP ${statusText}）`);
+      failureReason = `资料库删除请求失败（HTTP ${statusText}）`;
+      updateLibraryCleanupStatus('⚠️ 检测到删除请求失败，正在等待本轮其他删除请求完成...');
     }
 
     const hasStarted = libraryDeleteRequestStartedCount > previousStartedCount;
-    const hasCompleted = libraryDeleteRequestCompletedCount > previousCompletedCount;
+    const startedInRound = libraryDeleteRequestStartedCount - previousStartedCount;
+    const completedInRound = libraryDeleteRequestCompletedCount - previousCompletedCount;
+    const allStartedRequestsCompleted = hasStarted && completedInRound >= startedInRound;
 
     if (!hasStarted && Date.now() - startedAt >= requestStartTimeoutMs) {
-      throw new Error('确认删除后未检测到 delete-batch 请求');
+      throw new Error(failureReason || '确认删除后未检测到 delete-batch 请求');
     }
 
-    if (hasStarted && hasCompleted && libraryDeleteRequestActiveCount === 0) {
+    if (allStartedRequestsCompleted && libraryDeleteRequestActiveCount === 0) {
       if (!idleSince) idleSince = Date.now();
-      // ChatGPT 会把一次全选删除拆成多个请求；留出窗口等待后续批次开始。
-      if (Date.now() - idleSince >= 2000) return true;
+      // ChatGPT 会把一次全选删除拆成多个请求；连续静默后才认为本轮全部结束。
+      if (Date.now() - idleSince >= 3000) {
+        if (failureReason) throw new Error(failureReason);
+        return true;
+      }
     } else {
       idleSince = 0;
     }
