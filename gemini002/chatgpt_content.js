@@ -1329,6 +1329,30 @@ function clickElementOnce(element) {
   return true;
 }
 
+function clickLibraryConfirmInPageContext(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const requestId = `library-delete-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener('message', onResult);
+    };
+    const onResult = (event) => {
+      if (event.source !== window || !event.data || event.data.type !== 'CHATGPT_LIBRARY_CONFIRM_DELETE_RESULT') return;
+      if (event.data.requestId !== requestId) return;
+      cleanup();
+      if (event.data.success) resolve(true);
+      else reject(new Error(event.data.error || '页面上下文触发确认删除失败'));
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('等待页面上下文触发确认删除超时'));
+    }, timeoutMs);
+
+    window.addEventListener('message', onResult);
+    window.postMessage({ type: 'CHATGPT_LIBRARY_CONFIRM_DELETE', requestId }, '*');
+  });
+}
+
 async function waitForCondition(check, timeoutMs = 15000, intervalMs = 250) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -1453,11 +1477,16 @@ function findVisibleButtonByText(labels, root = document) {
 
 async function waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, timeoutMs = 120000) {
   const startedAt = Date.now();
+  const requestStartTimeoutMs = 15000;
   let idleSince = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
     const hasStarted = libraryDeleteRequestStartedCount > previousStartedCount;
     const hasCompleted = libraryDeleteRequestCompletedCount > previousCompletedCount;
+
+    if (!hasStarted && Date.now() - startedAt >= requestStartTimeoutMs) {
+      throw new Error('确认删除后未检测到 delete-batch 请求');
+    }
 
     if (hasStarted && hasCompleted && libraryDeleteRequestActiveCount === 0) {
       if (!idleSince) idleSince = Date.now();
@@ -1577,7 +1606,8 @@ async function runLibraryCleanup(options = {}) {
 
       const previousStartedCount = libraryDeleteRequestStartedCount;
       const previousCompletedCount = libraryDeleteRequestCompletedCount;
-      clickElementOnce(confirmDeleteButton);
+      updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在页面上下文确认删除...`);
+      await clickLibraryConfirmInPageContext();
       await waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount);
 
       const listRefreshed = await waitForCondition(() => {

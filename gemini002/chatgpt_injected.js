@@ -38,6 +38,31 @@
     }, '*');
   }
 
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data || event.data.type !== 'CHATGPT_LIBRARY_CONFIRM_DELETE') return;
+
+    const requestId = event.data.requestId || '';
+    try {
+      const confirmButton = document.querySelector('button[data-testid="confirm-delete-recall-file-button"]');
+      if (!confirmButton) throw new Error('找不到确认删除按钮');
+
+      // 在 ChatGPT 主页面上下文中调用，避免内容脚本隔离环境与页面事件系统之间的差异。
+      confirmButton.click();
+      window.postMessage({
+        type: 'CHATGPT_LIBRARY_CONFIRM_DELETE_RESULT',
+        requestId,
+        success: true
+      }, '*');
+    } catch (error) {
+      window.postMessage({
+        type: 'CHATGPT_LIBRARY_CONFIRM_DELETE_RESULT',
+        requestId,
+        success: false,
+        error: error && error.message ? error.message : String(error)
+      }, '*');
+    }
+  });
+
   window.fetch = async function(input, init) {
     const requestUrl = typeof input === 'string' ? input : input && input.url;
     const requestMethod = init && init.method ? init.method : input && input.method;
