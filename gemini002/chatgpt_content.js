@@ -1433,27 +1433,6 @@ function getFirstLibraryModifiedTimeText() {
   );
 }
 
-function getLibraryRowClickTarget(row) {
-  return row && row.querySelector('button[data-testid^="artifact-checkbox-bridge-"]');
-}
-
-function isTodayLibraryTimeText(text) {
-  const normalized = (text || '').replace(/\s+/g, '').trim().toLowerCase();
-  if (!normalized) return false;
-  if (/(今天|今日|today|刚刚|分钟前|小时前)/i.test(normalized)) return true;
-  if (/^(?:上午|下午|am|pm)?\d{1,2}:\d{2}(?:am|pm)?$/i.test(normalized)) return true;
-
-  const now = new Date();
-  const month = now.getMonth() + 1;
-  const day = now.getDate();
-  const escapedTodayLabels = [
-    `${month}月${day}日`,
-    `${month}/${day}`,
-    `${month}-${day}`
-  ];
-  return escapedTodayLabels.some((label) => normalized === label.toLowerCase());
-}
-
 function isCheckboxSelected(element) {
   return !!element && (
     element.checked === true ||
@@ -1558,35 +1537,17 @@ async function runLibraryCleanup(options = {}) {
 
       await ensureLibraryModifiedTimeAscending();
       const firstModifiedTime = getFirstLibraryModifiedTimeText();
-      if (isTodayLibraryTimeText(firstModifiedTime)) {
-        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
-        stopReason = 'today';
-        updateLibraryCleanupStatus(`🛑 首条文件是今天的数据（${firstModifiedTime}），已停止清理`);
-        break;
-      }
       updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：首条修改时间 ${firstModifiedTime || '未知'}，继续清理...`);
 
       const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
       if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
 
       const rows = Array.from(document.querySelectorAll('[data-page-table-selectable-row="true"]'));
-      const firstTodayRowIndex = rows.findIndex((row) => (
-        isTodayLibraryTimeText(getLibraryRowModifiedTimeText(row))
-      ));
-      if (firstTodayRowIndex > 0) {
-        updateLibraryCleanupStatus(`🛡️ 当前批次混有今天的数据，仅选择前 ${firstTodayRowIndex} 条旧文件`);
-        const oldRowClickTargets = rows.slice(0, firstTodayRowIndex)
-          .map((row) => getLibraryRowClickTarget(row))
-          .filter(Boolean);
-        if (oldRowClickTargets.length !== firstTodayRowIndex) {
-          throw new Error('部分旧文件缺少可点击的选择控件，已停止以保护今天的数据');
-        }
-        oldRowClickTargets.forEach((target) => clickElementOnce(target));
-      } else if (!isCheckboxSelected(selectAll)) {
+      if (!isCheckboxSelected(selectAll)) {
         clickElementOnce(getLibrarySelectAllClickTarget(selectAll));
       }
 
-      const expectedSelectedCount = firstTodayRowIndex > 0 ? firstTodayRowIndex : rows.length;
+      const expectedSelectedCount = rows.length;
       const selectionReady = await waitForCondition(() => (
         getSelectedLibraryRowIds().length >= expectedSelectedCount
       ), 10000, 250);
