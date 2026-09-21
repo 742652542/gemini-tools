@@ -22,14 +22,44 @@
     window.postMessage(payload, '*');
   }
 
+  function isLibraryBatchDeleteTarget(url, method) {
+    if (!url) return false;
+    const normalizedUrl = typeof url === 'string' ? url : String(url);
+    const upperMethod = typeof method === 'string' ? method.toUpperCase() : '';
+    return upperMethod === 'POST' && normalizedUrl.includes('/backend-api/files/library/files/delete-batch');
+  }
+
+  function notifyLibraryBatchDelete(phase, url, status) {
+    window.postMessage({
+      type: 'CHATGPT_LIBRARY_DELETE_BATCH',
+      phase,
+      url: typeof url === 'string' ? url : String(url || ''),
+      status: typeof status === 'number' ? status : 0
+    }, '*');
+  }
+
   window.fetch = async function(input, init) {
     const requestUrl = typeof input === 'string' ? input : input && input.url;
     const requestMethod = init && init.method ? init.method : input && input.method;
-    const response = await originalFetch.apply(this, arguments);
+    const isBatchDelete = isLibraryBatchDeleteTarget(requestUrl, requestMethod);
+    if (isBatchDelete) notifyLibraryBatchDelete('start', requestUrl, 0);
+
+    let response;
+    try {
+      response = await originalFetch.apply(this, arguments);
+    } catch (err) {
+      if (isBatchDelete) notifyLibraryBatchDelete('complete', requestUrl, 0);
+      throw err;
+    }
 
     if (isUploadTarget(requestUrl, requestMethod) && response && response.status === 201) {
       console.log('✅ [Injected] 捕获到 fetch 图片上传成功', requestUrl);
       notifyUploadComplete(requestUrl, response.status);
+    }
+
+    if (isBatchDelete) {
+      console.log('✅ [Injected] 捕获到资料库批量删除请求完成', requestUrl, response && response.status);
+      notifyLibraryBatchDelete('complete', requestUrl, response ? response.status : 0);
     }
 
     return response;
@@ -38,6 +68,8 @@
   XMLHttpRequest.prototype.open = function(method, url) {
     this._chatgptUploadMethod = method;
     this._chatgptUploadUrl = url;
+    this._chatgptLibraryDeleteMethod = method;
+    this._chatgptLibraryDeleteUrl = url;
     return originalXHROpen.apply(this, arguments);
   };
 
@@ -49,6 +81,14 @@
           notifyUploadComplete(this._chatgptUploadUrl, this.status);
         }
       });
+    }
+
+    if (isLibraryBatchDeleteTarget(this._chatgptLibraryDeleteUrl, this._chatgptLibraryDeleteMethod)) {
+      notifyLibraryBatchDelete('start', this._chatgptLibraryDeleteUrl, 0);
+      this.addEventListener('loadend', function() {
+        console.log('✅ [Injected] 捕获到资料库批量删除 XHR 完成', this._chatgptLibraryDeleteUrl, this.status);
+        notifyLibraryBatchDelete('complete', this._chatgptLibraryDeleteUrl, this.status);
+      }, { once: true });
     }
 
     return originalXHRSend.apply(this, arguments);

@@ -3,6 +3,13 @@ console.log('[ChatGPT Bot] Content Script Loaded');
 let uploadRequestCompletedCount = 0;
 let uploadRequestLastDetail = null;
 let imageReplyFailureText = '';
+let libraryDeleteRequestStartedCount = 0;
+let libraryDeleteRequestCompletedCount = 0;
+let libraryDeleteRequestActiveCount = 0;
+let libraryCleanupRunning = false;
+
+const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/library?tab=all';
+const LIBRARY_CLEANUP_STORAGE_KEY = 'chatgpt_library_cleanup_active';
 
 const injectedScript = document.createElement('script');
 injectedScript.src = chrome.runtime.getURL('chatgpt_injected.js');
@@ -12,13 +19,31 @@ injectedScript.onload = function() {
 (document.head || document.documentElement).appendChild(injectedScript);
 
 window.addEventListener('message', (event) => {
-  if (event.source !== window || !event.data || event.data.type !== 'CHATGPT_UPLOAD_COMPLETE') {
+  if (event.source !== window || !event.data) {
     return;
   }
 
-  uploadRequestCompletedCount += 1;
-  uploadRequestLastDetail = event.data;
-  console.log('✅ 收到上传成功消息', event.data);
+  if (event.data.type === 'CHATGPT_UPLOAD_COMPLETE') {
+    uploadRequestCompletedCount += 1;
+    uploadRequestLastDetail = event.data;
+    console.log('✅ 收到上传成功消息', event.data);
+    return;
+  }
+
+  if (event.data.type === 'CHATGPT_LIBRARY_DELETE_BATCH') {
+    if (event.data.phase === 'start') {
+      libraryDeleteRequestStartedCount += 1;
+      libraryDeleteRequestActiveCount += 1;
+    } else if (event.data.phase === 'complete') {
+      libraryDeleteRequestCompletedCount += 1;
+      libraryDeleteRequestActiveCount = Math.max(0, libraryDeleteRequestActiveCount - 1);
+    }
+    console.log('🗂️ 资料库批量删除请求状态', event.data, {
+      started: libraryDeleteRequestStartedCount,
+      completed: libraryDeleteRequestCompletedCount,
+      active: libraryDeleteRequestActiveCount
+    });
+  }
 });
 
 function sleep(ms) {
@@ -1253,6 +1278,15 @@ async function typeAndSendTest(
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'run_library_cleanup') {
+    runLibraryCleanup({ maxRounds: request.max_rounds }).then((result) => {
+      sendResponse(result);
+    }).catch((err) => {
+      sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
+    });
+    return true;
+  }
+
   if (request.action === 'type_and_send') {
     typeAndSend(
       request.text,
@@ -1272,6 +1306,356 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+function isVisibleElement(element) {
+  if (!element || !element.isConnected) return false;
+  const style = window.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+}
+
+function normalizedElementText(element) {
+  return (element && (element.innerText || element.textContent) || '').replace(/\s+/g, '').trim().toLowerCase();
+}
+
+function clickElementOnce(element) {
+  if (!element) return false;
+  try {
+    element.scrollIntoView({ block: 'center', inline: 'center' });
+  } catch (err) {}
+  try {
+    element.focus({ preventScroll: true });
+  } catch (err) {}
+  element.click();
+  return true;
+}
+
+async function waitForCondition(check, timeoutMs = 15000, intervalMs = 250) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = check();
+    if (result) return result;
+    await sleep(intervalMs);
+  }
+  return null;
+}
+
+function getLibrarySelectAllCheckbox() {
+  const exactCheckbox = document.querySelector(
+    '[data-testid="artifacts-surface-library-list-header"] input[type="checkbox"][aria-label="选择全部"], ' +
+    '[data-testid="artifacts-surface-library-list-header"] input[type="checkbox"][aria-label="Select all"]'
+  );
+  if (exactCheckbox) return exactCheckbox;
+
+  const checkboxSelectors = [
+    'input[type="checkbox"]',
+    'button[role="checkbox"]',
+    '[role="checkbox"]',
+    'button[data-state="checked"]',
+    'button[data-state="unchecked"]'
+  ];
+  const candidates = Array.from(document.querySelectorAll(checkboxSelectors.join(',')))
+    .filter(isVisibleElement);
+
+  const labeled = candidates.find((element) => {
+    const label = [
+      element.getAttribute('aria-label'),
+      element.getAttribute('title'),
+      element.closest('label') && element.closest('label').innerText
+    ].filter(Boolean).join(' ').toLowerCase();
+    return /select\s*all|全选|选择全部/.test(label);
+  });
+  if (labeled) return labeled;
+
+  // 资料库表格的全选框位于所有可见复选框的最上方。
+  return candidates.sort((a, b) => {
+    const rectA = a.getBoundingClientRect();
+    const rectB = b.getBoundingClientRect();
+    return rectA.top - rectB.top || rectA.left - rectB.left;
+  })[0] || null;
+}
+
+function getLibrarySelectAllClickTarget(checkbox) {
+  if (!checkbox) return null;
+  const checkboxCell = checkbox.parentElement && checkbox.parentElement.parentElement;
+  const bridgeButton = checkboxCell && checkboxCell.querySelector(':scope > button[aria-hidden="true"]');
+  return bridgeButton || checkbox;
+}
+
+function getLibraryFileRowCount() {
+  return document.querySelectorAll('[data-page-table-selectable-row="true"]').length;
+}
+
+function getSelectedLibraryRowIds() {
+  return Array.from(document.querySelectorAll(
+    '[data-page-table-selectable-row="true"][data-selected="true"]'
+  )).map((row) => row.getAttribute('data-page-table-selection-id')).filter(Boolean);
+}
+
+function getLibraryModifiedTimeSortButton() {
+  const header = document.querySelector('[data-testid="artifacts-surface-library-list-header"]');
+  if (!header) return null;
+  return Array.from(header.querySelectorAll('button')).find((button) => {
+    const text = normalizedElementText(button);
+    return text.startsWith('修改时间') || text.startsWith('modified');
+  }) || null;
+}
+
+function isLibraryModifiedTimeAscending(button) {
+  if (!button || button.getAttribute('aria-pressed') !== 'true') return false;
+  const icon = button.querySelector('svg');
+  if (!icon) return true;
+  const iconClass = icon.getAttribute('class') || '';
+  const transform = window.getComputedStyle(icon).transform || '';
+  return !/rotate-180/i.test(iconClass) && !/^matrix\(-1,\s*0,\s*0,\s*-1/i.test(transform);
+}
+
+async function ensureLibraryModifiedTimeAscending() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const sortButton = getLibraryModifiedTimeSortButton();
+    if (!sortButton) throw new Error('未找到资料库的“修改时间”排序按钮');
+    if (isLibraryModifiedTimeAscending(sortButton)) return true;
+    clickElementOnce(sortButton);
+    await sleep(1200);
+  }
+
+  throw new Error('无法将资料库切换为修改时间正序');
+}
+
+function getLibraryRowModifiedTimeText(row) {
+  if (!row) return '';
+  const cells = Array.from(row.querySelectorAll(':scope > [role="gridcell"]'));
+  return cells.length >= 3 ? (cells[2].textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+function getFirstLibraryModifiedTimeText() {
+  return getLibraryRowModifiedTimeText(
+    document.querySelector('[data-page-table-selectable-row="true"]')
+  );
+}
+
+function getLibraryRowClickTarget(row) {
+  return row && row.querySelector('button[data-testid^="artifact-checkbox-bridge-"]');
+}
+
+function isTodayLibraryTimeText(text) {
+  const normalized = (text || '').replace(/\s+/g, '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (/(今天|今日|today|刚刚|分钟前|小时前)/i.test(normalized)) return true;
+  if (/^(?:上午|下午|am|pm)?\d{1,2}:\d{2}(?:am|pm)?$/i.test(normalized)) return true;
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  const escapedTodayLabels = [
+    `${month}月${day}日`,
+    `${month}/${day}`,
+    `${month}-${day}`
+  ];
+  return escapedTodayLabels.some((label) => normalized === label.toLowerCase());
+}
+
+function isCheckboxSelected(element) {
+  return !!element && (
+    element.checked === true ||
+    element.getAttribute('aria-checked') === 'true' ||
+    element.getAttribute('data-state') === 'checked'
+  );
+}
+
+function findVisibleButtonByText(labels, root = document) {
+  const normalizedLabels = labels.map((label) => label.replace(/\s+/g, '').toLowerCase());
+  return Array.from(root.querySelectorAll('button, [role="button"]')).find((element) => {
+    if (!isVisibleElement(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+    const text = normalizedElementText(element);
+    const ariaLabel = (element.getAttribute('aria-label') || '').replace(/\s+/g, '').toLowerCase();
+    return normalizedLabels.includes(text) || normalizedLabels.includes(ariaLabel);
+  }) || null;
+}
+
+async function waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, timeoutMs = 120000) {
+  const startedAt = Date.now();
+  let idleSince = 0;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const hasStarted = libraryDeleteRequestStartedCount > previousStartedCount;
+    const hasCompleted = libraryDeleteRequestCompletedCount > previousCompletedCount;
+
+    if (hasStarted && hasCompleted && libraryDeleteRequestActiveCount === 0) {
+      if (!idleSince) idleSince = Date.now();
+      // ChatGPT 会把一次全选删除拆成多个请求；留出窗口等待后续批次开始。
+      if (Date.now() - idleSince >= 2000) return true;
+    } else {
+      idleSince = 0;
+    }
+
+    await sleep(200);
+  }
+
+  throw new Error('等待资料库批量删除请求完成超时');
+}
+
+function updateLibraryCleanupStatus(message) {
+  const log = document.getElementById('status-log');
+  if (log) log.innerText = message;
+  console.log(`[资料库清理] ${message}`);
+}
+
+async function runLibraryCleanup(options = {}) {
+  if (libraryCleanupRunning) {
+    return { success: false, skipped: true, reason: '已有资料库清理正在进行' };
+  }
+  libraryCleanupRunning = true;
+  const requestedMaxRounds = Number(options.maxRounds);
+  const maxRounds = Number.isFinite(requestedMaxRounds) && requestedMaxRounds > 0
+    ? Math.floor(requestedMaxRounds)
+    : Number.POSITIVE_INFINITY;
+  let completedRounds = 0;
+  let stopReason = '';
+
+  const cleanupButton = document.getElementById('btn-library-cleanup');
+  if (cleanupButton) cleanupButton.disabled = true;
+
+  try {
+    sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
+
+    if (window.location.hostname !== 'chatgpt.com' || window.location.pathname !== '/library' || new URLSearchParams(window.location.search).get('tab') !== 'all') {
+      updateLibraryCleanupStatus('↗️ 正在打开资料库...');
+      window.location.assign(CHATGPT_LIBRARY_URL);
+      return { success: true, navigating: true, completedRounds: 0 };
+    }
+
+    let round = 0;
+    let consecutiveEmptyChecks = 0;
+    while (sessionStorage.getItem(LIBRARY_CLEANUP_STORAGE_KEY) === '1') {
+      if (completedRounds >= maxRounds) {
+        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+        stopReason = 'max_rounds';
+        updateLibraryCleanupStatus(`✅ 已达到本次上限 ${maxRounds} 轮，等待下次定时清理`);
+        break;
+      }
+
+      round += 1;
+      updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：等待文件列表加载...`);
+
+      const listReady = await waitForCondition(() => (
+        document.querySelector('[data-testid="artifacts-surface-library-list-header"]') ||
+        document.querySelector('[data-testid="page-table-background"]')
+      ), 30000, 500);
+      if (!listReady) throw new Error('等待资料库列表加载超时');
+
+      if (getLibraryFileRowCount() === 0) {
+        consecutiveEmptyChecks += 1;
+        if (consecutiveEmptyChecks < 3) {
+          await sleep(2500);
+          continue;
+        }
+        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+        stopReason = 'empty';
+        updateLibraryCleanupStatus(`✅ 清理完成，共执行 ${completedRounds} 轮`);
+        break;
+      }
+      consecutiveEmptyChecks = 0;
+
+      await ensureLibraryModifiedTimeAscending();
+      const firstModifiedTime = getFirstLibraryModifiedTimeText();
+      if (isTodayLibraryTimeText(firstModifiedTime)) {
+        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+        stopReason = 'today';
+        updateLibraryCleanupStatus(`🛑 首条文件是今天的数据（${firstModifiedTime}），已停止清理`);
+        break;
+      }
+      updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：首条修改时间 ${firstModifiedTime || '未知'}，继续清理...`);
+
+      const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
+      if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
+
+      const rows = Array.from(document.querySelectorAll('[data-page-table-selectable-row="true"]'));
+      const firstTodayRowIndex = rows.findIndex((row) => (
+        isTodayLibraryTimeText(getLibraryRowModifiedTimeText(row))
+      ));
+      if (firstTodayRowIndex > 0) {
+        updateLibraryCleanupStatus(`🛡️ 当前批次混有今天的数据，仅选择前 ${firstTodayRowIndex} 条旧文件`);
+        const oldRowClickTargets = rows.slice(0, firstTodayRowIndex)
+          .map((row) => getLibraryRowClickTarget(row))
+          .filter(Boolean);
+        if (oldRowClickTargets.length !== firstTodayRowIndex) {
+          throw new Error('部分旧文件缺少可点击的选择控件，已停止以保护今天的数据');
+        }
+        oldRowClickTargets.forEach((target) => clickElementOnce(target));
+      } else if (!isCheckboxSelected(selectAll)) {
+        clickElementOnce(getLibrarySelectAllClickTarget(selectAll));
+      }
+
+      const expectedSelectedCount = firstTodayRowIndex > 0 ? firstTodayRowIndex : rows.length;
+      const selectionReady = await waitForCondition(() => (
+        getSelectedLibraryRowIds().length >= expectedSelectedCount
+      ), 10000, 250);
+      if (!selectionReady) throw new Error('等待文件选择完成超时');
+
+      const deleteButton = await waitForCondition(() => {
+        const dialog = document.querySelector('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]');
+        if (dialog && isVisibleElement(dialog)) return null;
+        return findVisibleButtonByText(['删除', 'Delete']);
+      }, 10000);
+      if (!deleteButton) throw new Error('全选后未找到页面底部的删除按钮');
+
+      updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：已全选，正在请求删除...`);
+      const selectedRowIds = getSelectedLibraryRowIds();
+      clickElementOnce(deleteButton);
+
+      const confirmDeleteButton = await waitForCondition(() => {
+        const dialog = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]'))
+          .find(isVisibleElement);
+        if (!dialog) return null;
+        const exactConfirmButton = dialog.querySelector('button[data-testid="confirm-delete-recall-file-button"]');
+        return exactConfirmButton && isVisibleElement(exactConfirmButton)
+          ? exactConfirmButton
+          : findVisibleButtonByText(['删除', 'Delete'], dialog);
+      }, 10000);
+      if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
+
+      const previousStartedCount = libraryDeleteRequestStartedCount;
+      const previousCompletedCount = libraryDeleteRequestCompletedCount;
+      clickElementOnce(confirmDeleteButton);
+      await waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount);
+
+      const listRefreshed = await waitForCondition(() => {
+        const stillSelected = document.querySelector(
+          '[data-page-table-selectable-row="true"][data-selected="true"]'
+        );
+        const oldRowStillPresent = selectedRowIds.some((rowId) => (
+          document.querySelector(`[data-page-table-selection-id="${CSS.escape(rowId)}"]`)
+        ));
+        return !stillSelected && !oldRowStillPresent;
+      }, 30000, 500);
+      if (!listRefreshed) throw new Error('删除请求完成，但资料库列表未及时刷新');
+
+      completedRounds += 1;
+
+      updateLibraryCleanupStatus(`✅ 第 ${round} 轮删除完成，准备检查剩余文件...`);
+      await waitForCondition(() => {
+        const dialog = document.querySelector('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]');
+        return !dialog || !isVisibleElement(dialog);
+      }, 10000);
+      await sleep(1500);
+    }
+    return { success: true, completedRounds, reason: stopReason || 'stopped' };
+  } catch (err) {
+    sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+    updateLibraryCleanupStatus(`❌ 清理失败: ${err && err.message ? err.message : String(err)}`);
+    console.error('❌ 资料库清理失败:', err);
+    return {
+      success: false,
+      completedRounds,
+      error: err && err.message ? err.message : String(err)
+    };
+  } finally {
+    libraryCleanupRunning = false;
+    const currentButton = document.getElementById('btn-library-cleanup');
+    if (currentButton) currentButton.disabled = false;
+  }
+}
+
 function createPanel() {
   if (document.getElementById('chatgpt-bot-panel')) return;
 
@@ -1282,6 +1666,7 @@ function createPanel() {
             <h3 style="margin:0 0 10px 0; font-size:14px; color:#e8eaed;">ChatGPT 全自动机器人</h3>
             <button id="btn-test" style="width:100%; padding:8px; background:#8ab4f8; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">⚡ 运行图片上传测试</button>
             <button id="btn-work-check" style="width:100%; margin-top:8px; padding:8px; background:#a8dab5; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">🧪 运行 Work 定时检查</button>
+            <button id="btn-library-cleanup" style="width:100%; margin-top:8px; padding:8px; background:#f28b82; border:none; border-radius:4px; cursor:pointer; color:#202124; font-weight:bold;">🗑️ 清理存储</button>
             <div id="status-log" style="margin-top:10px; font-size:12px; color:#9aa0a6;">就绪</div>
         </div>
     `;
@@ -1316,6 +1701,15 @@ function createPanel() {
         if (log) log.innerText = `⚠️ Work 检查未完成: ${reason}`;
       });
     };
+  }
+
+  const libraryCleanupButton = document.getElementById('btn-library-cleanup');
+  if (libraryCleanupButton) {
+    libraryCleanupButton.onclick = () => runLibraryCleanup();
+  }
+
+  if (sessionStorage.getItem(LIBRARY_CLEANUP_STORAGE_KEY) === '1') {
+    setTimeout(() => runLibraryCleanup(), 500);
   }
 }
 
