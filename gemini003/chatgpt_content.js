@@ -1413,6 +1413,40 @@ function getSelectedLibraryRowIds() {
   )).map((row) => row.getAttribute('data-page-table-selection-id')).filter(Boolean);
 }
 
+function getLibraryScrollContainer() {
+  const firstRow = document.querySelector('[data-page-table-selectable-row="true"]');
+  const candidates = [document.scrollingElement];
+  let current = firstRow && firstRow.parentElement;
+
+  while (current) {
+    const style = window.getComputedStyle(current);
+    if (/auto|scroll/.test(style.overflowY) && current.scrollHeight > current.clientHeight) {
+      candidates.push(current);
+    }
+    current = current.parentElement;
+  }
+
+  return candidates.filter(Boolean).sort((a, b) => (
+    (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+  ))[0] || document.scrollingElement;
+}
+
+async function scrollLibraryPageBeforeSelectAll() {
+  const scrollContainer = getLibraryScrollContainer();
+  if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) return;
+
+  updateLibraryCleanupStatus('↕️ 正在向下翻页 5 次以加载文件...');
+  scrollContainer.scrollTop = 0;
+  await sleep(300);
+  for (let page = 1; page <= 5; page += 1) {
+    const pageDistance = Math.max(scrollContainer.clientHeight * 0.9, 600);
+    scrollContainer.scrollTop += pageDistance;
+    await sleep(500);
+  }
+  scrollContainer.scrollTop = 0;
+  await sleep(500);
+}
+
 function getLibraryModifiedTimeSortButton() {
   const header = document.querySelector('[data-testid="artifacts-surface-library-list-header"]');
   if (!header) return null;
@@ -1599,6 +1633,8 @@ async function runLibraryCleanup() {
       await ensureLibraryModifiedTimeAscending();
       const firstModifiedTime = getFirstLibraryModifiedTimeText();
       updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：首条修改时间 ${firstModifiedTime || '未知'}，继续清理...`);
+
+      await scrollLibraryPageBeforeSelectAll();
 
       const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
       if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
