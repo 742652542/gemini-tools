@@ -3,11 +3,6 @@ console.log('[ChatGPT Bot] Content Script Loaded');
 let uploadRequestCompletedCount = 0;
 let uploadRequestLastDetail = null;
 let imageReplyFailureText = '';
-let libraryDeleteRequestStartedCount = 0;
-let libraryDeleteRequestCompletedCount = 0;
-let libraryDeleteRequestActiveCount = 0;
-let libraryDeleteRequestFailedCount = 0;
-let libraryDeleteRequestLastFailureStatus = 0;
 let libraryCleanupRunning = false;
 
 const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/library?tab=all';
@@ -30,26 +25,6 @@ window.addEventListener('message', (event) => {
     uploadRequestCompletedCount += 1;
     uploadRequestLastDetail = event.data;
     console.log('✅ 收到上传成功消息', event.data);
-    return;
-  }
-
-  if (event.data.type === 'CHATGPT_LIBRARY_DELETE_BATCH') {
-    if (event.data.phase === 'start') {
-      libraryDeleteRequestStartedCount += 1;
-      libraryDeleteRequestActiveCount += 1;
-    } else if (event.data.phase === 'complete') {
-      libraryDeleteRequestCompletedCount += 1;
-      libraryDeleteRequestActiveCount = Math.max(0, libraryDeleteRequestActiveCount - 1);
-      if (event.data.status < 200 || event.data.status >= 300) {
-        libraryDeleteRequestFailedCount += 1;
-        libraryDeleteRequestLastFailureStatus = event.data.status;
-      }
-    }
-    console.log('🗂️ 资料库批量删除请求状态', event.data, {
-      started: libraryDeleteRequestStartedCount,
-      completed: libraryDeleteRequestCompletedCount,
-      active: libraryDeleteRequestActiveCount
-    });
   }
 });
 
@@ -1413,42 +1388,6 @@ function getSelectedLibraryRowIds() {
   )).map((row) => row.getAttribute('data-page-table-selection-id')).filter(Boolean);
 }
 
-function getLibraryScrollContainer() {
-  const firstRow = document.querySelector('[data-page-table-selectable-row="true"]');
-  const candidates = [document.scrollingElement];
-  let current = firstRow && firstRow.parentElement;
-
-  while (current) {
-    const style = window.getComputedStyle(current);
-    if (/auto|scroll/.test(style.overflowY) && current.scrollHeight > current.clientHeight) {
-      candidates.push(current);
-    }
-    current = current.parentElement;
-  }
-
-  return candidates.filter(Boolean).sort((a, b) => (
-    (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
-  ))[0] || document.scrollingElement;
-}
-
-async function scrollLibraryPageBeforeSelectAll() {
-  const scrollContainer = getLibraryScrollContainer();
-  if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) return;
-
-  updateLibraryCleanupStatus('↕️ 正在向下翻页 5 次以加载文件...');
-  scrollContainer.scrollTop = 0;
-  await sleep(1000);
-  for (let page = 1; page <= 5; page += 1) {
-    const pageDistance = Math.max(scrollContainer.clientHeight * 0.9, 600);
-    scrollContainer.scrollTop += pageDistance;
-    updateLibraryCleanupStatus(`↕️ 正在加载第 ${page}/5 页...`);
-    await sleep(2000);
-  }
-  await sleep(1000);
-  scrollContainer.scrollTop = 0;
-  await sleep(1000);
-}
-
 function isCheckboxSelected(element) {
   return !!element && (
     element.checked === true ||
@@ -1467,6 +1406,27 @@ function findVisibleButtonByText(labels, root = document) {
   }) || null;
 }
 
+function getVisibleLibraryDeleteDialog() {
+  return Array.from(document.querySelectorAll(
+    '[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]'
+  )).find(isVisibleElement) || null;
+}
+
+function getLibraryConfirmDeleteButton() {
+  const dialog = getVisibleLibraryDeleteDialog();
+  if (!dialog) return null;
+  const exactConfirmButton = dialog.querySelector('button[data-testid="confirm-delete-recall-file-button"]');
+  if (
+    exactConfirmButton &&
+    isVisibleElement(exactConfirmButton) &&
+    !exactConfirmButton.disabled &&
+    exactConfirmButton.getAttribute('aria-disabled') !== 'true'
+  ) {
+    return exactConfirmButton;
+  }
+  return findVisibleButtonByText(['删除', 'Delete'], dialog);
+}
+
 function hasVisibleLibraryDeleteFailureNotice() {
   const candidates = document.querySelectorAll(
     '[role="alert"], [role="status"], [data-sonner-toast], [data-testid*="toast"]'
@@ -1478,47 +1438,43 @@ function hasVisibleLibraryDeleteFailureNotice() {
   });
 }
 
-async function waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, previousFailedCount, timeoutMs = 120000) {
+function isLibraryConfirmDeleteLoading(button, initialSpinnerCount = 0) {
+  if (!button || !button.isConnected) return false;
+  if (button.disabled || button.getAttribute('aria-disabled') === 'true') return true;
+  if (button.getAttribute('aria-busy') === 'true') return true;
+  if (button.getAttribute('data-loading') === 'true' || button.getAttribute('data-state') === 'loading') return true;
+
+  const spinnerSelector = [
+    '[role="progressbar"]',
+    '[data-testid*="loading"]',
+    '[data-testid*="spinner"]',
+    '[aria-label*="loading" i]',
+    '[aria-label*="加载"]',
+    '.animate-spin',
+    'svg'
+  ].join(',');
+  return button.querySelectorAll(spinnerSelector).length > initialSpinnerCount;
+}
+
+async function waitForLibraryConfirmDeleteLoading(button, initialSpinnerCount, timeoutMs = 10000) {
+  const loadingStarted = await waitForCondition(
+    () => isLibraryConfirmDeleteLoading(button, initialSpinnerCount),
+    timeoutMs,
+    100
+  );
+  if (!loadingStarted) throw new Error('点击确认删除后按钮未进入 loading 状态');
+}
+
+async function waitForLibraryDeleteDialogOutcome(button, initialSpinnerCount, timeoutMs = 120000) {
   const startedAt = Date.now();
-  const requestStartTimeoutMs = 15000;
-  let idleSince = 0;
-  let failureReason = '';
-
   while (Date.now() - startedAt < timeoutMs) {
-    if (!failureReason && hasVisibleLibraryDeleteFailureNotice()) {
-      failureReason = '页面提示无法删除文件';
-      updateLibraryCleanupStatus('⚠️ 检测到删除失败，正在等待本轮其他删除请求完成...');
+    if (!getVisibleLibraryDeleteDialog()) return 'closed';
+    if (!isLibraryConfirmDeleteLoading(button, initialSpinnerCount) && getLibraryConfirmDeleteButton()) {
+      return 'retry';
     }
-    if (!failureReason && libraryDeleteRequestFailedCount > previousFailedCount) {
-      const statusText = libraryDeleteRequestLastFailureStatus || '网络错误';
-      failureReason = `资料库删除请求失败（HTTP ${statusText}）`;
-      updateLibraryCleanupStatus('⚠️ 检测到删除请求失败，正在等待本轮其他删除请求完成...');
-    }
-
-    const hasStarted = libraryDeleteRequestStartedCount > previousStartedCount;
-    const startedInRound = libraryDeleteRequestStartedCount - previousStartedCount;
-    const completedInRound = libraryDeleteRequestCompletedCount - previousCompletedCount;
-    const allStartedRequestsCompleted = hasStarted && completedInRound >= startedInRound;
-
-    if (!hasStarted && Date.now() - startedAt >= requestStartTimeoutMs) {
-      throw new Error(failureReason || '确认删除后未检测到 delete-batch 请求');
-    }
-
-    if (allStartedRequestsCompleted && libraryDeleteRequestActiveCount === 0) {
-      if (!idleSince) idleSince = Date.now();
-      // ChatGPT 会把一次全选删除拆成多个请求；连续静默后才认为本轮全部结束。
-      if (Date.now() - idleSince >= 10000) {
-        if (failureReason) throw new Error(failureReason);
-        return true;
-      }
-    } else {
-      idleSince = 0;
-    }
-
-    await sleep(200);
+    await sleep(250);
   }
-
-  throw new Error('等待资料库批量删除请求完成超时');
+  throw new Error('等待删除确认框关闭或恢复超时');
 }
 
 function updateLibraryCleanupStatus(message) {
@@ -1535,11 +1491,9 @@ function isRecoverableLibraryCleanupError(errorMessage) {
     '全选后未找到页面底部的删除按钮',
     '检测到残留删除确认框',
     '未找到删除确认框中的删除按钮',
-    '页面提示无法删除文件',
-    '资料库删除请求失败',
-    '确认删除后未检测到 delete-batch 请求',
-    '等待资料库批量删除请求完成超时',
-    '删除请求完成，但资料库列表未及时刷新'
+    '点击确认删除后按钮未进入 loading 状态',
+    '等待删除确认框关闭或恢复超时',
+    '确认删除弹窗连续 3 次未自动关闭'
   ].some((message) => errorMessage.includes(message));
 }
 
@@ -1552,6 +1506,13 @@ function reloadLibraryCleanupAndResume(errorMessage) {
   sessionStorage.setItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY, String(reloadCount));
   updateLibraryCleanupStatus(`🔄 ${errorMessage}，正在刷新页面后继续（第 ${reloadCount} 次恢复）...`);
   setTimeout(() => window.location.reload(), reloadDelay);
+}
+
+function reloadLibraryCleanupAfterFiveRounds() {
+  sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
+  sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
+  updateLibraryCleanupStatus('🔄 已完成 5 轮删除，正在刷新页面后继续...');
+  setTimeout(() => window.location.reload(), 1000);
 }
 
 async function runLibraryCleanup() {
@@ -1598,8 +1559,6 @@ async function runLibraryCleanup() {
       }
       consecutiveEmptyChecks = 0;
 
-      await scrollLibraryPageBeforeSelectAll();
-
       const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
       if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
 
@@ -1613,6 +1572,7 @@ async function runLibraryCleanup() {
         getSelectedLibraryRowIds().length >= expectedSelectedCount
       ), 10000, 250);
       if (!selectionReady) throw new Error('等待文件选择完成超时');
+      await sleep(1000);
 
       const deleteButton = await waitForCondition(() => {
         const dialog = document.querySelector('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]');
@@ -1628,46 +1588,42 @@ async function runLibraryCleanup() {
       }
 
       updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：已全选，正在请求删除...`);
-      const selectedRowIds = getSelectedLibraryRowIds();
       clickElementOnce(deleteButton);
 
-      const confirmDeleteButton = await waitForCondition(() => {
-        const dialog = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]'))
-          .find(isVisibleElement);
-        if (!dialog) return null;
-        const exactConfirmButton = dialog.querySelector('button[data-testid="confirm-delete-recall-file-button"]');
-        return exactConfirmButton && isVisibleElement(exactConfirmButton)
-          ? exactConfirmButton
-          : findVisibleButtonByText(['删除', 'Delete'], dialog);
-      }, 10000);
-      if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
+      let deleteDialogClosed = false;
+      for (let confirmAttempt = 1; confirmAttempt <= 3; confirmAttempt += 1) {
+        const confirmDeleteButton = await waitForCondition(() => getLibraryConfirmDeleteButton(), 10000, 200);
+        if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
 
-      const previousStartedCount = libraryDeleteRequestStartedCount;
-      const previousCompletedCount = libraryDeleteRequestCompletedCount;
-      const previousFailedCount = libraryDeleteRequestFailedCount;
-      updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在页面上下文确认删除...`);
-      await clickLibraryConfirmInPageContext();
-      await waitForLibraryBatchDelete(previousStartedCount, previousCompletedCount, previousFailedCount);
+        const initialSpinnerCount = confirmDeleteButton.querySelectorAll(
+          '[role="progressbar"], [data-testid*="loading"], [data-testid*="spinner"], [aria-label*="loading" i], [aria-label*="加载"], .animate-spin, svg'
+        ).length;
+        updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在确认删除（第 ${confirmAttempt}/3 次）...`);
+        await clickLibraryConfirmInPageContext();
+        await waitForLibraryConfirmDeleteLoading(confirmDeleteButton, initialSpinnerCount);
+        updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：按钮处于 loading，正在等待删除完成...`);
 
-      const listRefreshed = await waitForCondition(() => {
-        const stillSelected = document.querySelector(
-          '[data-page-table-selectable-row="true"][data-selected="true"]'
-        );
-        const oldRowStillPresent = selectedRowIds.some((rowId) => (
-          document.querySelector(`[data-page-table-selection-id="${CSS.escape(rowId)}"]`)
-        ));
-        return !stillSelected && !oldRowStillPresent;
-      }, 30000, 500);
-      if (!listRefreshed) throw new Error('删除请求完成，但资料库列表未及时刷新');
+        const dialogOutcome = await waitForLibraryDeleteDialogOutcome(confirmDeleteButton, initialSpinnerCount);
+        if (dialogOutcome === 'closed') {
+          deleteDialogClosed = true;
+          break;
+        }
+
+        if (confirmAttempt < 3) {
+          updateLibraryCleanupStatus(`⚠️ 第 ${round} 轮：loading 已结束但确认框仍在，准备再次点击删除...`);
+        }
+      }
+      if (!deleteDialogClosed) throw new Error('确认删除弹窗连续 3 次未自动关闭');
 
       completedRounds += 1;
       sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
 
+      if (completedRounds >= 5) {
+        reloadLibraryCleanupAfterFiveRounds();
+        return;
+      }
+
       updateLibraryCleanupStatus(`✅ 第 ${round} 轮删除完成，准备检查剩余文件...`);
-      await waitForCondition(() => {
-        const dialog = document.querySelector('[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]');
-        return !dialog || !isVisibleElement(dialog);
-      }, 10000);
       await sleep(1500);
     }
   } catch (err) {
