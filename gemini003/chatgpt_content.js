@@ -1277,6 +1277,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (request.action === 'run_library_cleanup') {
+    sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
+    runLibraryCleanup({
+      maxRounds: Number(request.max_rounds) || 2,
+      reloadOnRecoverable: false,
+      allowNavigation: false
+    }).then((result) => {
+      sendResponse(result || { success: true });
+    }).catch((err) => {
+      sendResponse({ success: false, error: err && err.message ? err.message : String(err) });
+    });
+    return true;
+  }
 });
 
 function isVisibleElement(element) {
@@ -1379,13 +1393,44 @@ function getLibrarySelectAllClickTarget(checkbox) {
 }
 
 function getLibraryFileRowCount() {
-  return document.querySelectorAll('[data-page-table-selectable-row="true"]').length;
+  const selectableRows = document.querySelectorAll(
+    '[data-page-table-selectable-row="true"], [data-page-table-selection-id]'
+  ).length;
+  return Math.max(selectableRows, getLibraryRowCheckboxes().length);
 }
 
-function getSelectedLibraryRowIds() {
+function getLibraryRowCheckboxes() {
+  const selectAll = getLibrarySelectAllCheckbox();
+  const header = document.querySelector('[data-testid="artifacts-surface-library-list-header"]');
   return Array.from(document.querySelectorAll(
+    'input[type="checkbox"], button[role="checkbox"], [role="checkbox"]'
+  )).filter((element) => (
+    element !== selectAll &&
+    (!header || !header.contains(element)) &&
+    isVisibleElement(element)
+  ));
+}
+
+function getSelectedLibraryRowCount() {
+  const selectedRows = document.querySelectorAll(
     '[data-page-table-selectable-row="true"][data-selected="true"]'
-  )).map((row) => row.getAttribute('data-page-table-selection-id')).filter(Boolean);
+  ).length;
+  const selectedCheckboxes = getLibraryRowCheckboxes().filter(isCheckboxSelected).length;
+  return Math.max(selectedRows, selectedCheckboxes);
+}
+
+function hasExplicitLibraryEmptyState() {
+  const emptyElement = Array.from(document.querySelectorAll(
+    '[data-testid*="empty"], [class*="empty"], [role="status"]'
+  )).find((element) => {
+    if (!isVisibleElement(element)) return false;
+    const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
+    return /资料库.*为空|暂无.*文件|还没有.*文件|没有.*文件|library is empty|no files/i.test(text);
+  });
+  if (emptyElement) return true;
+
+  const pageText = (document.body && document.body.innerText || '').replace(/\s+/g, ' ');
+  return /资料库为空|暂无文件|还没有任何文件|library is empty|no files in (?:your )?library/i.test(pageText);
 }
 
 function isCheckboxSelected(element) {
@@ -1486,6 +1531,7 @@ function updateLibraryCleanupStatus(message) {
 function isRecoverableLibraryCleanupError(errorMessage) {
   return [
     '等待资料库列表加载超时',
+    '资料库列表已显示，但未识别到文件行或明确的空状态',
     '未找到资料库的“选择全部”复选框',
     '等待文件选择完成超时',
     '全选后未找到页面底部的删除按钮',
@@ -1515,10 +1561,15 @@ function reloadLibraryCleanupAfterFiveRounds() {
   setTimeout(() => window.location.reload(), 1000);
 }
 
-async function runLibraryCleanup() {
+async function runLibraryCleanup(options = {}) {
   if (libraryCleanupRunning) {
-    return;
+    return { success: false, skipped: true, error: '资料库清理已在运行' };
   }
+  const maxRounds = Number.isFinite(options.maxRounds) && options.maxRounds > 0
+    ? Math.floor(options.maxRounds)
+    : Number.POSITIVE_INFINITY;
+  const reloadOnRecoverable = options.reloadOnRecoverable !== false;
+  const allowNavigation = options.allowNavigation !== false;
   libraryCleanupRunning = true;
   let completedRounds = 0;
 
@@ -1529,9 +1580,18 @@ async function runLibraryCleanup() {
     sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
 
     if (window.location.hostname !== 'chatgpt.com' || window.location.pathname !== '/library' || new URLSearchParams(window.location.search).get('tab') !== 'all') {
+      if (!allowNavigation) {
+        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+        return {
+          success: false,
+          exit: true,
+          completedRounds,
+          error: '当前页面不是 ChatGPT 资料库全部文件页面'
+        };
+      }
       updateLibraryCleanupStatus('↗️ 正在打开资料库...');
       window.location.assign(CHATGPT_LIBRARY_URL);
-      return;
+      return { success: false, navigating: true, completedRounds };
     }
 
     let round = 0;
@@ -1552,24 +1612,27 @@ async function runLibraryCleanup() {
           await sleep(2500);
           continue;
         }
-        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
-        sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
-        updateLibraryCleanupStatus(`✅ 清理完成，共执行 ${completedRounds} 轮`);
-        break;
+        if (hasExplicitLibraryEmptyState()) {
+          sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+          sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
+          updateLibraryCleanupStatus(`✅ 清理完成，共执行 ${completedRounds} 轮`);
+          break;
+        }
+        throw new Error('资料库列表已显示，但未识别到文件行或明确的空状态');
       }
       consecutiveEmptyChecks = 0;
 
       const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
       if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
 
-      const rows = Array.from(document.querySelectorAll('[data-page-table-selectable-row="true"]'));
+      const expectedSelectedCount = getLibraryFileRowCount();
       if (!isCheckboxSelected(selectAll)) {
         clickElementOnce(getLibrarySelectAllClickTarget(selectAll));
       }
 
-      const expectedSelectedCount = rows.length;
       const selectionReady = await waitForCondition(() => (
-        getSelectedLibraryRowIds().length >= expectedSelectedCount
+        isCheckboxSelected(selectAll) &&
+        getSelectedLibraryRowCount() >= expectedSelectedCount
       ), 10000, 250);
       if (!selectionReady) throw new Error('等待文件选择完成超时');
       await sleep(1000);
@@ -1618,25 +1681,33 @@ async function runLibraryCleanup() {
       completedRounds += 1;
       sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
 
+      if (completedRounds >= maxRounds) {
+        sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
+        updateLibraryCleanupStatus(`✅ 已按要求执行 ${completedRounds} 轮删除`);
+        return { success: true, completedRounds, limitReached: true };
+      }
+
       if (completedRounds >= 5) {
         reloadLibraryCleanupAfterFiveRounds();
-        return;
+        return { success: true, completedRounds, reloading: true };
       }
 
       updateLibraryCleanupStatus(`✅ 第 ${round} 轮删除完成，准备检查剩余文件...`);
       await sleep(1500);
     }
+    return { success: true, completedRounds, empty: true };
   } catch (err) {
     const errorMessage = err && err.message ? err.message : String(err);
     console.error('❌ 资料库清理失败:', err);
-    if (isRecoverableLibraryCleanupError(errorMessage)) {
+    if (reloadOnRecoverable && isRecoverableLibraryCleanupError(errorMessage)) {
       reloadLibraryCleanupAndResume(errorMessage);
-      return;
+      return { success: false, completedRounds, reloading: true, error: errorMessage };
     }
 
     sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
     sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
     updateLibraryCleanupStatus(`❌ 清理失败: ${errorMessage}`);
+    return { success: false, completedRounds, error: errorMessage };
   } finally {
     libraryCleanupRunning = false;
     const currentButton = document.getElementById('btn-library-cleanup');
