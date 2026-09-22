@@ -27,7 +27,23 @@
 
     const requestId = event.data.requestId || '';
     try {
-      const confirmButton = document.querySelector('button[data-testid="confirm-delete-recall-file-button"]');
+      const dialog = Array.from(document.querySelectorAll(
+        '[role="dialog"], [role="alertdialog"], [data-radix-dialog-content]'
+      )).find((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      });
+      const confirmButton = (
+        dialog && dialog.querySelector('button[data-testid="confirm-delete-recall-file-button"]')
+      ) || (
+        dialog && dialog.querySelector('button[type="submit"][data-color="danger"]')
+      ) || (
+        dialog && Array.from(dialog.querySelectorAll('button[type="submit"], button')).find((button) => {
+          const text = (button.innerText || button.textContent || '').replace(/\s+/g, '').trim().toLowerCase();
+          return text === '删除' || text === 'delete';
+        })
+      );
       if (!confirmButton) throw new Error('找不到确认删除按钮');
 
       // 在 ChatGPT 主页面上下文中调用，避免内容脚本隔离环境与页面事件系统之间的差异。

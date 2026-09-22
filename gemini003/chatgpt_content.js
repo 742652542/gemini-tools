@@ -1353,7 +1353,9 @@ async function waitForCondition(check, timeoutMs = 15000, intervalMs = 250) {
 function getLibrarySelectAllCheckbox() {
   const exactCheckbox = document.querySelector(
     '[data-testid="artifacts-surface-library-list-header"] input[type="checkbox"][aria-label="选择全部"], ' +
-    '[data-testid="artifacts-surface-library-list-header"] input[type="checkbox"][aria-label="Select all"]'
+    '[data-testid="artifacts-surface-library-list-header"] input[type="checkbox"][aria-label="Select all"], ' +
+    '[role="grid"][aria-label="Library files"] button[role="checkbox"][aria-label="全选"], ' +
+    '[role="grid"][aria-label="Library files"] button[role="checkbox"][aria-label="Select all"]'
   );
   if (exactCheckbox) return exactCheckbox;
 
@@ -1394,26 +1396,32 @@ function getLibrarySelectAllClickTarget(checkbox) {
 
 function getLibraryFileRowCount() {
   const selectableRows = document.querySelectorAll(
-    '[data-page-table-selectable-row="true"], [data-page-table-selection-id]'
+    '[data-page-table-selectable-row="true"], [data-page-table-selection-id], ' +
+    '[data-library-item], [data-library-selection-id]'
   ).length;
   return Math.max(selectableRows, getLibraryRowCheckboxes().length);
 }
 
 function getLibraryRowCheckboxes() {
   const selectAll = getLibrarySelectAllCheckbox();
-  const header = document.querySelector('[data-testid="artifacts-surface-library-list-header"]');
+  const header = document.querySelector(
+    '[data-testid="artifacts-surface-library-list-header"], ' +
+    '[role="grid"][aria-label="Library files"] [role="row"] [role="columnheader"][data-library-column="selection"]'
+  );
   return Array.from(document.querySelectorAll(
     'input[type="checkbox"], button[role="checkbox"], [role="checkbox"]'
   )).filter((element) => (
     element !== selectAll &&
     (!header || !header.contains(element)) &&
+    !/^(全选|选择全部|select all)$/i.test((element.getAttribute('aria-label') || '').trim()) &&
     isVisibleElement(element)
   ));
 }
 
 function getSelectedLibraryRowCount() {
   const selectedRows = document.querySelectorAll(
-    '[data-page-table-selectable-row="true"][data-selected="true"]'
+    '[data-page-table-selectable-row="true"][data-selected="true"], ' +
+    '[data-library-item] [role="row"][aria-selected="true"]'
   ).length;
   const selectedCheckboxes = getLibraryRowCheckboxes().filter(isCheckboxSelected).length;
   return Math.max(selectedRows, selectedCheckboxes);
@@ -1487,12 +1495,14 @@ function isLibraryConfirmDeleteLoading(button, initialSpinnerCount = 0) {
   if (!button || !button.isConnected) return false;
   if (button.disabled || button.getAttribute('aria-disabled') === 'true') return true;
   if (button.getAttribute('aria-busy') === 'true') return true;
-  if (button.getAttribute('data-loading') === 'true' || button.getAttribute('data-state') === 'loading') return true;
+  if (button.hasAttribute('data-loading') || button.getAttribute('data-state') === 'loading') return true;
 
   const spinnerSelector = [
     '[role="progressbar"]',
     '[data-testid*="loading"]',
     '[data-testid*="spinner"]',
+    '[class*="ButtonLoader-"]',
+    '[class*="LoadingIndicator-"]',
     '[aria-label*="loading" i]',
     '[aria-label*="加载"]',
     '.animate-spin',
@@ -1602,7 +1612,10 @@ async function runLibraryCleanup(options = {}) {
 
       const listReady = await waitForCondition(() => (
         document.querySelector('[data-testid="artifacts-surface-library-list-header"]') ||
-        document.querySelector('[data-testid="page-table-background"]')
+        document.querySelector('[data-testid="page-table-background"]') ||
+        document.querySelector('[role="grid"][aria-label="Library files"]') ||
+        document.querySelector('[data-library-item]') ||
+        document.querySelector('[data-library-selection-id]')
       ), 30000, 500);
       if (!listReady) throw new Error('等待资料库列表加载超时');
 
@@ -1659,7 +1672,7 @@ async function runLibraryCleanup(options = {}) {
         if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
 
         const initialSpinnerCount = confirmDeleteButton.querySelectorAll(
-          '[role="progressbar"], [data-testid*="loading"], [data-testid*="spinner"], [aria-label*="loading" i], [aria-label*="加载"], .animate-spin, svg'
+          '[role="progressbar"], [data-testid*="loading"], [data-testid*="spinner"], [class*="ButtonLoader-"], [class*="LoadingIndicator-"], [aria-label*="loading" i], [aria-label*="加载"], .animate-spin, svg'
         ).length;
         updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在确认删除（第 ${confirmAttempt}/3 次）...`);
         await clickLibraryConfirmInPageContext();
