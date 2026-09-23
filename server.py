@@ -255,9 +255,12 @@ class MediaFetchError(Exception):
 def normalize_media_items(value: object) -> list:
     if value is None:
         return []
-    if isinstance(value, list):
-        return value
-    return [value]
+
+    values = value if isinstance(value, list) else [value]
+    return [
+        item for item in values
+        if item is not None and (not isinstance(item, str) or item.strip())
+    ]
 
 
 def is_http_url(value: object) -> bool:
