@@ -18,10 +18,18 @@ let preloadLoadListener = null;
 let preloadPrepareTimer = null;
 let preloadAttemptId = 0;
 let preloadPrepareStarted = false;
+let preloadReadyAt = 0;
+let preloadHealthCheckFailures = 0;
+let preloadHealthCheckInFlight = false;
 const ENABLE_PRELOAD = !DEBUG_STATUS;
 const ENABLE_USAGE_POLLING = !DEBUG_STATUS;
 const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
+const TAB_HEALTH_CHECK_INTERVAL = 5000;
+const TAB_HEALTH_CHECK_GRACE = 10000;
+const TAB_HEALTH_MAX_FAILURES = 3;
+const PRELOAD_HEALTH_MAX_FAILURES = 2;
+const MAX_TASK_TAB_CRASH_RETRY = 2;
 const CONVERSATION_LOST_ERROR = "对话窗口丢失了。";
 const MAX_CONVERSATION_LOST_RETRY = 1;
 const CHATGPT_RETRYABLE_ERRORS = [
@@ -540,6 +548,9 @@ function clearPreloadState() {
     preloadState = "idle";
     preloadModel = null;
     preloadPrepareStarted = false;
+    preloadReadyAt = 0;
+    preloadHealthCheckFailures = 0;
+    preloadHealthCheckInFlight = false;
 }
 
 function detachPreloadTab(nextState = "idle") {
@@ -549,6 +560,9 @@ function detachPreloadTab(nextState = "idle") {
     preloadModel = null;
     preloadState = nextState;
     preloadPrepareStarted = false;
+    preloadReadyAt = 0;
+    preloadHealthCheckFailures = 0;
+    preloadHealthCheckInFlight = false;
     return tabId;
 }
 
@@ -602,6 +616,9 @@ function startPreloadPrepare(attemptId, attemptTabId, loadListener) {
             if (response && response.success === true) {
                 preloadState = "ready";
                 preloadModel = PRELOAD_MODEL;
+                preloadReadyAt = Date.now();
+                preloadHealthCheckFailures = 0;
+                preloadHealthCheckInFlight = false;
                 if (preloadPrepareTimer) {
                     clearTimeout(preloadPrepareTimer);
                     preloadPrepareTimer = null;
@@ -747,6 +764,7 @@ function cleanupConnection() {
 
 // Service Worker 保活
 setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+setInterval(monitorManagedTabs, TAB_HEALTH_CHECK_INTERVAL);
 
 connectWebSocket();
 startUsagePolling();
@@ -810,6 +828,146 @@ function clearTaskRuntime(taskId) {
 
     taskRegistry.delete(taskId);
     return taskData;
+}
+
+function findTaskIdByTabId(tabId) {
+    for (const [taskId, taskData] of taskRegistry.entries()) {
+        if (taskData && taskData.tab_id === tabId) return taskId;
+    }
+    return null;
+}
+
+function getTaskTargetUrl(taskData) {
+    return taskData && taskData.task_source === "chatgpt"
+        ? "https://chatgpt.com/"
+        : "https://gemini.google.com/app";
+}
+
+function recoverTaskAfterTabCrash(taskId, reason = "任务页面无响应") {
+    const taskData = taskRegistry.get(taskId);
+    if (!taskData || !taskData.original_task || taskData.recovering || taskData.execution_completed) {
+        return false;
+    }
+
+    const currentRetryCount = Number(taskData.crash_retry_count || 0);
+    if (currentRetryCount >= MAX_TASK_TAB_CRASH_RETRY) {
+        console.error(`❌ [Task: ${taskId}] 页面连续崩溃，已达到恢复上限: ${reason}`);
+        sendToPython({
+            status: "error",
+            task_id: taskId,
+            action: taskData.task_action,
+            source: taskData.task_source,
+            data: "",
+            error: `任务页面崩溃，自动恢复 ${MAX_TASK_TAB_CRASH_RETRY} 次后仍失败`
+        });
+        closeTabAndCleanup(taskId);
+        return false;
+    }
+
+    taskData.recovering = true;
+    const retryTask = {
+        ...taskData.original_task,
+        _tabCrashRetryCount: currentRetryCount + 1
+    };
+    const tabId = taskData.tab_id;
+    const targetUrl = getTaskTargetUrl(taskData);
+
+    console.warn(`↩️ [Task: ${taskId}] 检测到任务页崩溃或失联: ${reason}，重新开页执行 (${currentRetryCount + 1}/${MAX_TASK_TAB_CRASH_RETRY})`);
+    clearTaskRuntime(taskId);
+
+    const restart = () => {
+        setTimeout(() => openTaskTabAndDispatch(retryTask, targetUrl), 1000);
+    };
+
+    if (tabId) {
+        chrome.tabs.remove(tabId, () => {
+            if (chrome.runtime.lastError) {}
+            restart();
+        });
+    } else {
+        restart();
+    }
+
+    return true;
+}
+
+function isCrashTabState(tab, changeInfo = {}) {
+    const title = `${changeInfo.title || ""} ${tab && tab.title ? tab.title : ""}`;
+    const crashTitle = /aw[, ]+snap|status_(?:breakpoint|access_violation)|页面.*崩溃|网页.*崩溃|糟糕/i.test(title);
+    const unloaded = changeInfo.status === "unloaded" || (tab && tab.status === "unloaded");
+    return crashTitle || unloaded || !!(tab && tab.discarded);
+}
+
+function checkTaskTabHealth(taskId, taskData) {
+    if (!taskData || !taskData.tab_id || taskData.recovering || taskData.execution_completed) return;
+    if (!taskData.dispatched_at || Date.now() - taskData.dispatched_at < TAB_HEALTH_CHECK_GRACE) return;
+    if (taskData.health_check_in_flight) return;
+
+    const tabId = taskData.tab_id;
+    taskData.health_check_in_flight = true;
+
+    chrome.tabs.sendMessage(tabId, { action: "health_check" }).then((response) => {
+        const current = taskRegistry.get(taskId);
+        if (!current || current.tab_id !== tabId) return;
+        current.health_check_in_flight = false;
+
+        if (response && response.success === true) {
+            current.health_check_failures = 0;
+            return;
+        }
+
+        current.health_check_failures = Number(current.health_check_failures || 0) + 1;
+        if (current.health_check_failures >= TAB_HEALTH_MAX_FAILURES) {
+            recoverTaskAfterTabCrash(taskId, "内容脚本心跳无有效响应");
+        }
+    }).catch((error) => {
+        const current = taskRegistry.get(taskId);
+        if (!current || current.tab_id !== tabId) return;
+        current.health_check_in_flight = false;
+        current.health_check_failures = Number(current.health_check_failures || 0) + 1;
+        console.warn(`⚠️ [Task: ${taskId}] 页面心跳失败 (${current.health_check_failures}/${TAB_HEALTH_MAX_FAILURES}):`, error && error.message ? error.message : error);
+        if (current.health_check_failures >= TAB_HEALTH_MAX_FAILURES) {
+            recoverTaskAfterTabCrash(taskId, "内容脚本连续无响应");
+        }
+    });
+}
+
+function checkPreloadTabHealth() {
+    if (preloadState !== "ready" || !preloadTabId || preloadHealthCheckInFlight) return;
+    if (!preloadReadyAt || Date.now() - preloadReadyAt < TAB_HEALTH_CHECK_GRACE) return;
+
+    const tabId = preloadTabId;
+    preloadHealthCheckInFlight = true;
+    chrome.tabs.sendMessage(tabId, { action: "health_check" }).then((response) => {
+        if (preloadTabId !== tabId || preloadState !== "ready") return;
+        preloadHealthCheckInFlight = false;
+        if (response && response.success === true) {
+            preloadHealthCheckFailures = 0;
+            return;
+        }
+        preloadHealthCheckFailures += 1;
+        if (preloadHealthCheckFailures >= PRELOAD_HEALTH_MAX_FAILURES) {
+            console.warn(`⚠️ [Preload] 预加载页心跳无响应，重新创建: ${tabId}`);
+            clearPreloadTab();
+            schedulePreloadRestore(3000);
+        }
+    }).catch((error) => {
+        if (preloadTabId !== tabId || preloadState !== "ready") return;
+        preloadHealthCheckInFlight = false;
+        preloadHealthCheckFailures += 1;
+        console.warn(`⚠️ [Preload] 预加载页心跳失败 (${preloadHealthCheckFailures}/${PRELOAD_HEALTH_MAX_FAILURES}):`, error && error.message ? error.message : error);
+        if (preloadHealthCheckFailures >= PRELOAD_HEALTH_MAX_FAILURES) {
+            clearPreloadTab();
+            schedulePreloadRestore(3000);
+        }
+    });
+}
+
+function monitorManagedTabs() {
+    checkPreloadTabHealth();
+    for (const [taskId, taskData] of taskRegistry.entries()) {
+        checkTaskTabHealth(taskId, taskData);
+    }
 }
 
 function getRetryableTaskError(taskData, error) {
@@ -886,14 +1044,26 @@ function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadRe
         task_source: taskSource,
         original_task: task,
         retry_count: Number(task._conversationLostRetryCount || 0),
+        crash_retry_count: Number(task._tabCrashRetryCount || 0),
         download_timer: null,
         is_waiting_download: true,
+        dispatched_at: null,
+        health_check_failures: 0,
+        health_check_in_flight: false,
+        recovering: false,
+        execution_completed: false,
         timeout_id: timeoutId
     });
 
     const dispatchToTab = () => {
         console.log(`✅ [Task: ${taskId}] Tab 已就绪，发送执行指令...`);
         setTimeout(() => {
+            const currentTaskData = taskRegistry.get(taskId);
+            if (!currentTaskData || currentTaskData.tab_id !== tabId) return;
+            currentTaskData.dispatched_at = Date.now();
+            currentTaskData.health_check_failures = 0;
+            currentTaskData.health_check_in_flight = false;
+
             chrome.tabs.sendMessage(tabId, {
                 action: "type_and_send",
                 is_continue: task.is_continue,
@@ -913,26 +1083,10 @@ function registerTaskTabAndDispatch(task, tabId, waitForLoad = true, isPreloadRe
                 }
 
                 console.error(`❌ [Task: ${taskId}] 发送指令失败:`, err);
-
-                if (isPreloadReuse) {
-                    console.warn(`↩️ [Task: ${taskId}] 预加载复用失败，降级为新开页重试`);
-                    clearTaskRuntime(taskId);
-                    chrome.tabs.remove(tabId, () => {
-                        if (chrome.runtime.lastError) {}
-                        openTaskTabAndDispatch(task, "https://gemini.google.com/app");
-                    });
-                    return;
-                }
-
-                const payload = {
-                    status: "error",
-                    task_id: taskId,
-                    action: task.action,
-                    data: "",
-                    error: "Content script 通信失败"
-                };
-                sendToPython(payload);
-                closeTabAndCleanup(taskId);
+                recoverTaskAfterTabCrash(
+                    taskId,
+                    isPreloadReuse ? "预加载页内容脚本通信失败" : "新开任务页内容脚本通信失败"
+                );
             });
         }, waitForLoad ? 3000 : 0);
     };
@@ -1081,6 +1235,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return;
         }
 
+        // 内容脚本已经完成执行；停止页面心跳恢复，避免等待下载期间重复生成。
+        taskData.execution_completed = true;
+        taskData.health_check_in_flight = false;
+
         
 
         if (error) {
@@ -1175,6 +1333,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
         schedulePreloadRestore(3000);
     }
 
+    const taskId = findTaskIdByTabId(tabId);
+    if (taskId) {
+        recoverTaskAfterTabCrash(taskId, "任务标签被关闭或崩溃退出");
+    }
+
     if (usageTabId && tabId === usageTabId) {
         clearUsageRuntime();
         usageCollectionInProgress = false;
@@ -1188,8 +1351,23 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     captureAuthCallbackUrl(changeInfo.url);
+
+    if (isCrashTabState(tab, changeInfo)) {
+        if (isManagedPreloadTab(tabId)) {
+            console.warn(`⚠️ [Preload] 检测到预加载页崩溃: ${tabId}`);
+            clearPreloadTab();
+            schedulePreloadRestore(3000);
+            return;
+        }
+
+        const taskId = findTaskIdByTabId(tabId);
+        if (taskId) {
+            recoverTaskAfterTabCrash(taskId, `检测到 Chrome 崩溃页: ${tab && tab.title ? tab.title : changeInfo.status || "unknown"}`);
+            return;
+        }
+    }
 
     if (!isManagedPreloadTab(tabId) || preloadState !== "ready") return;
     if (!changeInfo.url && changeInfo.status !== "loading") return;

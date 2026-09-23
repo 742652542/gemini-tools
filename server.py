@@ -78,11 +78,21 @@ def is_aliyun_oss_endpoint(endpoint_url: Optional[str]) -> bool:
 def get_s3_client_options(s3_settings: Optional[dict] = None, timeout_seconds: int = 30) -> dict:
     target_s3_config = s3_settings or s3_config
     endpoint_url = target_s3_config.get("endpoint_url")
+    verify_setting = target_s3_config.get("ca_bundle") or target_s3_config.get("verify", True)
+
+    # boto3 的 verify 支持布尔值或 CA 证书文件路径。配置文件里的字符串布尔值
+    # 也在这里归一化，默认始终开启 HTTPS 证书校验。
+    if isinstance(verify_setting, str):
+        normalized_verify = verify_setting.strip().lower()
+        if normalized_verify in {"true", "1", "yes", "on"}:
+            verify_setting = True
+        elif normalized_verify in {"false", "0", "no", "off"}:
+            verify_setting = False
 
     if is_aliyun_oss_endpoint(endpoint_url):
         return {
             "region_name": "cn-hangzhou",
-            "verify": False,
+            "verify": verify_setting,
             "config": Config(
                 s3={"addressing_style": "virtual"},
                 request_checksum_calculation="when_required",
@@ -93,7 +103,7 @@ def get_s3_client_options(s3_settings: Optional[dict] = None, timeout_seconds: i
 
     return {
         "region_name": "ap-southeast-1",
-        "verify": False,
+        "verify": verify_setting,
         "config": Config(
             s3={"addressing_style": "path"},
             connect_timeout=timeout_seconds,

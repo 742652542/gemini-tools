@@ -1443,6 +1443,11 @@ async function typeAndSendTest() {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "health_check") {
+        sendResponse({ success: true, page: "gemini" });
+        return false;
+    }
+
     if (request.action === "type_and_send") {
         console.log("⌨️ [Content] 收到输入任务:", request.text);
         console.log("⌨️ [Content] 收到任务ID:", request.task_id);
