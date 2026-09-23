@@ -540,18 +540,16 @@ async def persist_task_file_in_background(task_id: str, data: dict):
 def save_task_result(task_id: str, client_id: str, data: dict):
     # 获取任务 action
     action = data.get("action", "generate_image") # 默认为图片，兼容旧代码
-    source = str(data.get("source") or "gemini").strip().lower()
     
     # 确定最终 JSON 存放目录
     date_folder = datetime.now().strftime("%Y-%m-%d")
     target_dir = os.path.join(RESULTS_DIR, date_folder)
     os.makedirs(target_dir, exist_ok=True)
     
-    # 1. 预处理水印和上传：只有图片任务才处理
+    # 1. 解码并上传图片；Gemini 图片保留原始文件，不再进行去水印处理
     if action == "generate_image" and data.get("status") == "success" and "data" in data:
         raw_images = data["data"]
         cdn_urls = []
-        should_process_watermark = source != "chatgpt"
 
         if isinstance(raw_images, list):
             # 建立任务专用的临时图片目录
@@ -577,14 +575,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
                     with open(temp_file_path, "wb") as f:
                         f.write(image_data)
 
-                    # B. ChatGPT 图片保留透明通道，跳过去水印处理
-                    if should_process_watermark:
-                        if not process_gemini_watermark(temp_file_path):
-                            print(f"GeminiWatermarkTool did not modify image, continuing upload: {temp_file_path}")
-                    else:
-                        print(f"Skipping watermark processing for ChatGPT image: {temp_file_path}")
-                    
-                    # C. 上传到 S3
+                    # B. 直接上传原图，不执行 process_gemini_watermark
                     object_name = f"ai/img/task_results/{date_folder}/{task_id+str(datetime.now().timestamp())}{ext}"
                     cdn_url = upload_to_s3(temp_file_path, object_name, action="generate_image")
                     if cdn_url:
@@ -640,23 +631,8 @@ def save_task_file(task_id: str, data: dict):
         if not file_extension:
             file_extension = ".bin"
         
-        if action == "generate_image":
-            if not process_gemini_watermark(image_disk_path):
-                print(f"Failed to execute GeminiWatermarkTool: {image_disk_path}")
-        elif action == "generate_video":
-            try:
-                subprocess.run(f'GeminiWatermarkTool-Video.exe "{image_disk_path}"', shell=True, check=True)
-                print(f"Video watermark processing successful: {image_disk_path}")
-                video_root, video_ext = os.path.splitext(image_disk_path)
-                processed_video_path = f"{video_root}_processed{video_ext}"
-                if os.path.exists(processed_video_path):
-                    upload_file_path = processed_video_path
-                    _, file_extension = os.path.splitext(upload_file_path)
-                    print(f"Using processed video for upload: {upload_file_path}")
-                else:
-                    print(f"Processed video not found, falling back to original file: {image_disk_path}")
-            except subprocess.CalledProcessError as e:
-                print(f"Failed to execute GeminiWatermarkTool-Video.exe: {e}")
+        # Gemini 图片和视频都直接上传原文件，不再执行去水印程序。
+        # process_gemini_watermark 保留，方便以后需要时重新启用。
         
         object_name = f"ai/img/task_results/{date_folder}/{task_id}{str(datetime.now().timestamp())}{file_extension}"        
         cdn_url = upload_to_s3(upload_file_path, object_name, action=action)

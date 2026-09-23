@@ -428,15 +428,28 @@ function ensureImageLoaded(img, timeoutMs = 30000) {
 function getReplyBlockImages(block) {
     if (!block) return [];
 
+    const images = Array.from(block.querySelectorAll([
+        'generated-image img',
+        'single-image.generated-image img',
+        '.attachment-container.generated-images img',
+        '.image-container img'
+    ].join(',')));
+
+    // 兼容旧版 Gemini：旧版需要通过图片下载按钮反查图片容器。
+    // 新版的“下载图片”按钮可能已经移到 message-content 外，所以不能再把
+    // 下载按钮是否存在作为识别生成图片的必要条件。
     const downloadButtons = Array.from(block.querySelectorAll([
         'download-generated-image-button',
         'gem-icon-button[data-test-id="download-generated-image-button"]',
         'button[data-test-id="download-generated-image-button"]',
+        'gem-icon-button[data-test-id="image-download-button"]',
+        'button[data-test-id="image-download-button"]',
         'button[aria-label="下载完整尺寸的图片"]',
-        'button[aria-label="Download full size image"]'
+        'button[aria-label="Download full size image"]',
+        'button[aria-label="下载图片"]',
+        'button[aria-label="Download image"]'
     ].join(',')));
 
-    const images = [];
     for (const downloadButton of downloadButtons) {
         const imageScope = downloadButton.closest('generated-image') ||
             downloadButton.closest('single-image') ||
@@ -458,6 +471,26 @@ function getReplyBlockImages(block) {
     });
 }
 
+function getReplyBlockText(block) {
+    if (!block) return '';
+
+    // textContent 会把“修改”等图片操作按钮文字也算作模型回复。
+    // 在副本中移除生成图片和交互控件，只保留真正的回复正文。
+    const clone = block.cloneNode(true);
+    clone.querySelectorAll([
+        'generated-image',
+        'message-actions',
+        'button',
+        'edit-button',
+        'share-button',
+        'download-generated-image-button',
+        'gem-icon-button',
+        'mat-icon'
+    ].join(',')).forEach(element => element.remove());
+
+    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
 async function findLatestUsableReplyBlock(timeoutMs = 60000) {
     const startTime = Date.now();
     let latestNonEmptyBlock = null;
@@ -467,7 +500,7 @@ async function findLatestUsableReplyBlock(timeoutMs = 60000) {
 
         for (const block of responseBlocks) {
             const images = getReplyBlockImages(block);
-            const textContent = (block.textContent || '').trim();
+            const textContent = getReplyBlockText(block);
 
             if (images.length > 0) {
                 return block;
@@ -506,11 +539,14 @@ async function getLatestReplyImages(task_id) {
     
     // 1. 获取图片
     const originalImages = getReplyBlockImages(lastBlock);
-    const textContent = lastBlock.textContent ? lastBlock.textContent : "";
+    const textContent = getReplyBlockText(lastBlock);
     // 如果没有图片，直接返回包含文本的错误对象
     console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
     if (originalImages.length === 0) {
-        return { status: 'error', data: 'show-'+textContent };
+        return {
+            status: 'error',
+            data: 'show-' + (textContent || '未找到生成的图片，请重试。')
+        };
     }
     
     // 确保图片加载完成（为了获取 naturalWidth/Height）
@@ -558,7 +594,11 @@ async function getLatestReplyImages(task_id) {
           return { status: 'error', data: 'show-图片已生成，但图片数据提取失败，请重试。' };
       }
 
-      return { status: "success", data: validBase64Images,message: 'show-'+textContent };
+      return {
+          status: "success",
+          data: validBase64Images,
+          message: textContent ? 'show-' + textContent : null
+      };
     }
 }
 
