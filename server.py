@@ -644,8 +644,26 @@ def save_task_file(task_id: str, data: dict):
         if not file_extension:
             file_extension = ".bin"
         
-        # Gemini 图片和视频都直接上传原文件，不再执行去水印程序。
-        # process_gemini_watermark 保留，方便以后需要时重新启用。
+        # 图片直接上传原文件；视频仍执行去水印，并优先上传处理后的文件。
+        if action == "generate_video":
+            try:
+                subprocess.run(
+                    f'GeminiWatermarkTool-Video.exe "{image_disk_path}"',
+                    shell=True,
+                    check=True
+                )
+                print(f"Video watermark processing successful: {image_disk_path}")
+
+                video_root, video_ext = os.path.splitext(image_disk_path)
+                processed_video_path = f"{video_root}_processed{video_ext}"
+                if os.path.exists(processed_video_path):
+                    upload_file_path = processed_video_path
+                    _, file_extension = os.path.splitext(upload_file_path)
+                    print(f"Using processed video for upload: {upload_file_path}")
+                else:
+                    print(f"Processed video not found, falling back to original file: {image_disk_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to execute GeminiWatermarkTool-Video.exe, falling back to original video: {e}")
         
         object_name = f"ai/img/task_results/{date_folder}/{task_id}{str(datetime.now().timestamp())}{file_extension}"        
         cdn_url = upload_to_s3(upload_file_path, object_name, action=action)
