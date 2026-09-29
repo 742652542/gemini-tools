@@ -67,6 +67,51 @@ function getPromptInput() {
   return document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
 }
 
+function isWorkPrivacyBannerVisible() {
+  const workNoticePattern = /(?:工作空间|工作区).{0,16}(?:不会|不).{0,16}(?:用于)?训练|(?:workspace|business)[\s-]*data\s+(?:is\s+)?not\s+used\s+to\s+train/i;
+  const bannerNotices = document.querySelectorAll(
+    '[class*="ComposerBannerPortal"] [data-markdown-copy="exclude"], [class*="ComposerBannerPortal"][data-markdown-copy="exclude"]'
+  );
+
+  return Array.from(bannerNotices).some((notice) =>
+    isVisibleElement(notice) && workNoticePattern.test(notice.textContent || '')
+  );
+}
+
+function isSelectedInterfaceButton(button) {
+  if (!button) return false;
+
+  return ['aria-checked', 'aria-pressed', 'aria-selected'].some(
+    (attribute) => button.getAttribute(attribute) === 'true'
+  ) || ['on', 'active', 'checked'].includes((button.getAttribute('data-state') || '').toLowerCase());
+}
+
+function findChatInterfaceButton(targetLabels) {
+  const promptForm = getPromptInput()?.closest('form');
+  const roots = [
+    ...document.querySelectorAll('[role="radiogroup"]'),
+    promptForm,
+    document
+  ].filter(Boolean);
+  const seen = new Set();
+  const selector = 'button, [role="button"], [role="tab"], [role="radio"]';
+
+  for (const root of roots) {
+    for (const button of root.querySelectorAll(selector)) {
+      if (seen.has(button) || !isVisibleElement(button) || button.closest('[data-composer-mode]')) continue;
+      seen.add(button);
+
+      const text = (button.textContent || '').replace(/\s+/g, '').trim().toLowerCase();
+      const ariaLabel = (button.getAttribute('aria-label') || '').replace(/\s+/g, '').trim().toLowerCase();
+      if (targetLabels.includes(text) || targetLabels.includes(ariaLabel)) {
+        return button;
+      }
+    }
+  }
+
+  return null;
+}
+
 async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5000) {
   console.log('开始切换工作模式!')
   const normalizedTarget = targetSurface === 'work' ? 'work' : 'chat';
@@ -77,24 +122,20 @@ async function ensureChatInterfaceSelected(targetSurface = 'chat', timeoutMs = 5
   let foundTargetButton = false;
 
   while (Date.now() - start < timeoutMs) {
-    const group = document.querySelector('[role="radiogroup"]');
-    if (!group) {
+    if (normalizedTarget === 'work' && isWorkPrivacyBannerVisible()) {
+      console.log(`✅ ChatGPT 当前已选择${targetName}界面`);
+      return true;
+    }
+
+    const targetButton = findChatInterfaceButton(targetLabels);
+
+    if (!targetButton) {
       await sleep(200);
       continue;
     }
-
-    const radios = Array.from(group.querySelectorAll('button[role="radio"]'));
-    const targetButton = radios.find((button) => {
-      const text = (button.textContent || '').replace(/\s+/g, '').trim().toLowerCase();
-      return targetLabels.includes(text);
-    });
-
-    if (!targetButton) {
-      throw new Error(`找不到 ChatGPT ${targetName} 界面选项`);
-    }
     foundTargetButton = true;
 
-    if (targetButton.getAttribute('aria-checked') === 'true' || targetButton.getAttribute('data-state') === 'on') {
+    if (isSelectedInterfaceButton(targetButton)) {
       console.log(`✅ ChatGPT 当前已选择${targetName}界面`);
       return true;
     }
@@ -262,12 +303,26 @@ async function pasteImage(base64Str, name = 'image.png') {
 }
 
 function getSendButton() {
-  return (
-    document.querySelector('button[data-testid="send-button"]') ||
-    document.querySelector('button[aria-label*="Send prompt"]') ||
-    document.querySelector('button[aria-label*="Send message"]') ||
-    document.querySelector('button[aria-label*="发送"]')
-  );
+  const selectors = [
+    'button[data-testid="send-button"]',
+    'button[aria-label*="Send prompt"]',
+    'button[aria-label*="Send message"]',
+    'button[aria-label="Send"][type="submit"]',
+    'button[aria-label*="发送"]'
+  ];
+
+  // New ChatGPT markup uses an exact aria-label="Send". Prefer the form that
+  // owns the prompt so another submit button elsewhere on the page is ignored.
+  const promptForm = getPromptInput()?.closest('form');
+  for (const root of [promptForm, document]) {
+    if (!root) continue;
+    for (const selector of selectors) {
+      const button = root.querySelector(selector);
+      if (button) return button;
+    }
+  }
+
+  return null;
 }
 
 function getStopButton() {
