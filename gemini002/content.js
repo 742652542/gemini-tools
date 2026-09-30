@@ -195,11 +195,7 @@ function waitForReplyComplete(timeoutMs = 240000) {
                     //保底查找一下下载按钮
                     const responseBlocks = document.querySelectorAll('message-content');
                     const lastBlock = responseBlocks[responseBlocks.length - 1];
-                    const imageDownloadBtn = lastBlock && (
-                        lastBlock.querySelector('button[aria-label="下载完整尺寸的图片"]') ||
-                        lastBlock.querySelector('button[aria-label="Download full size image"]') ||
-                        lastBlock.querySelector('gem-icon-button[data-test-id="download-generated-image-button"] button')
-                    );
+                    const imageDownloadBtn = findImageDownloadButton(lastBlock);
         
                     const isImageDownloadReady = imageDownloadBtn &&
                         !imageDownloadBtn.disabled &&
@@ -425,6 +421,84 @@ function ensureImageLoaded(img, timeoutMs = 30000) {
     });
 }
 
+const IMAGE_DOWNLOAD_BUTTON_SELECTORS = [
+    'download-generated-image-button',
+    'gem-icon-button[data-test-id="download-generated-image-button"]',
+    'button[data-test-id="download-generated-image-button"]',
+    'gem-icon-button[data-test-id="image-download-button"]',
+    'button[data-test-id="image-download-button"]',
+    'button[aria-label="下载完整尺寸的图片"]',
+    'button[aria-label="Download full size image"]',
+    'button[aria-label="下载图片"]',
+    'button[aria-label="Download image"]'
+];
+
+const IMAGE_DOWNLOAD_BUTTON_SELECTOR = IMAGE_DOWNLOAD_BUTTON_SELECTORS.join(',');
+
+function getImageDownloadButtonElement(candidate) {
+    if (!candidate) return null;
+    if (candidate.matches('button')) return candidate;
+    return candidate.querySelector('button');
+}
+
+function getReplyResponseScopes(block) {
+    if (!block) return [];
+    return [
+        block.closest('model-response'),
+        block.closest('response-container'),
+        block.closest('conversation-container')
+    ].filter((scope, index, scopes) => scope && scopes.indexOf(scope) === index);
+}
+
+function isUsableImageDownloadButton(button) {
+    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true' ||
+        button.closest('[aria-disabled="true"]')) return false;
+
+    const style = window.getComputedStyle(button);
+    return style.display !== 'none' && style.visibility !== 'hidden' &&
+        button.getClientRects().length > 0;
+}
+
+// Gemini now places generated-image actions in the response footer, outside
+// message-content. Resolve the action from the reply's enclosing response first
+// and only then consider document candidates from newest to oldest.
+function findImageDownloadButton(block) {
+    const responseScopes = getReplyResponseScopes(block);
+    const findInScope = (scope) => {
+        if (!scope) return null;
+        const candidates = Array.from(scope.querySelectorAll(IMAGE_DOWNLOAD_BUTTON_SELECTOR)).reverse();
+        for (const candidate of candidates) {
+            const button = getImageDownloadButtonElement(candidate);
+            if (isUsableImageDownloadButton(button)) return button;
+        }
+        return null;
+    };
+
+    for (const responseScope of responseScopes) {
+        const scopedButton = findInScope(responseScope);
+        if (scopedButton) return scopedButton;
+    }
+
+    const blockButton = findInScope(block);
+    if (blockButton) return blockButton;
+
+    const candidates = Array.from(document.querySelectorAll(IMAGE_DOWNLOAD_BUTTON_SELECTOR)).reverse();
+    for (const candidate of candidates) {
+        const button = getImageDownloadButtonElement(candidate);
+        if (!isUsableImageDownloadButton(button)) continue;
+
+        // When a reply scope is known, never fall back to another response's
+        // footer action. This prevents an older image from being downloaded.
+        if (responseScopes.length) {
+            const candidateScopes = getReplyResponseScopes(candidate);
+            if (!candidateScopes.some(scope => responseScopes.includes(scope))) continue;
+        }
+        return button;
+    }
+
+    return null;
+}
+
 function getReplyBlockImages(block) {
     if (!block) return [];
 
@@ -438,17 +512,7 @@ function getReplyBlockImages(block) {
     // 兼容旧版 Gemini：旧版需要通过图片下载按钮反查图片容器。
     // 新版的“下载图片”按钮可能已经移到 message-content 外，所以不能再把
     // 下载按钮是否存在作为识别生成图片的必要条件。
-    const downloadButtons = Array.from(block.querySelectorAll([
-        'download-generated-image-button',
-        'gem-icon-button[data-test-id="download-generated-image-button"]',
-        'button[data-test-id="download-generated-image-button"]',
-        'gem-icon-button[data-test-id="image-download-button"]',
-        'button[data-test-id="image-download-button"]',
-        'button[aria-label="下载完整尺寸的图片"]',
-        'button[aria-label="Download full size image"]',
-        'button[aria-label="下载图片"]',
-        'button[aria-label="Download image"]'
-    ].join(',')));
+    const downloadButtons = Array.from(block.querySelectorAll(IMAGE_DOWNLOAD_BUTTON_SELECTOR));
 
     for (const downloadButton of downloadButtons) {
         const imageScope = downloadButton.closest('generated-image') ||
@@ -515,6 +579,11 @@ async function findLatestUsableReplyBlock(timeoutMs = 60000) {
     }
 
     return latestNonEmptyBlock;
+}
+
+function findLatestImageReplyBlock() {
+    return Array.from(document.querySelectorAll('message-content')).reverse()
+        .find(block => getReplyBlockImages(block).length > 0) || null;
 }
 
 async function getLatestReplyImages(task_id) {
@@ -606,95 +675,55 @@ async function downloadImage(task_id) {
     console.log("开始下载图片...");
     await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
 
-    const responseBlocks = document.querySelectorAll('message-content');
-    if (responseBlocks.length === 0) return "未找到回答";
-
-    const lastBlock = responseBlocks[responseBlocks.length - 1];
-    
-    // 1. 获取原始 DOM 中的图片
-    const originalImages = lastBlock.querySelectorAll('img');
-    
-    if (originalImages.length > 0) {
-        console.log(`🖼️ 检测到 ${originalImages.length} 张图片`);
-        
-        // 为了不破坏页面显示，我们操作克隆节点
-        const cloneBlock = lastBlock.cloneNode(true);
-        const cloneImages = cloneBlock.querySelectorAll('img');
-
-        // 查找下载按钮，兼容旧版 button 和新版 gem-icon-button 包裹结构
-        const downloadSelectors = [
-            'button[data-test-id="download-generated-image-button"]',
-            'gem-icon-button[data-test-id="download-generated-image-button"] button',
-            'gem-icon-button[data-test-id="download-generated-image-button"]',
-            'download-generated-image-button button[aria-label="下载完整尺寸的图片"]',
-            'download-generated-image-button button[aria-label="Download full size image"]',
-            'button[aria-label="下载完整尺寸的图片"]',
-            'button[aria-label="Download full size image"]'
-        ];
-
-        let sendBtn = null;
-        for (const selector of downloadSelectors) {
-            const candidate = lastBlock.querySelector(selector);
-            if (candidate) {
-                sendBtn = candidate.tagName === 'GEM-ICON-BUTTON'
-                    ? (candidate.querySelector('button') || candidate)
-                    : candidate;
-                break;
-            }
-        }
-    
-        if (sendBtn) {
-            console.log("🖱️ 找到下载按钮，准备点击...");
-
-            // ==========================================
-            // 核心填空部分：监听并获取
-            // ==========================================
-            try {
-                // 1. 告诉 Background: "我要点按钮了，注意拦截！"
-                // 我们构建一个 Promise 来等待 Background 的反馈
-                const interceptPromise = new Promise((resolve, reject) => {
-                    chrome.runtime.sendMessage({ action: "prepare_intercept" ,task_id: task_id}, (response) => {
-                        if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
-                        if (response && response.success) {
-                            resolve(response.data); // 拿到了 Base64
-                        } else {
-                            reject(new Error(response ? response.error : "Unknown error"));
-                        }
-                    });
-                });
-                
-                await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
-
-                // 2. 触发点击 (这会触发浏览器的下载事件，被 Background 捕获)
-                sendBtn.click();
-                console.log("🚀 发送按钮已点击，等待拦截数据...");
-
-                // 如果页面下载事件没有立即生效，每 10 秒补点一次，最多点击 3 次。
-                let retryCount = 1;
-                const retryTimer = setInterval(() => {
-                    retryCount++;
-                    sendBtn.click();
-                    console.log(`🔄 第 ${retryCount} 次点击图片下载按钮...`);
-                    if (retryCount >= 3) {
-                        clearInterval(retryTimer);
-                    }
-                }, 10000);
-            } catch (error) {
-                console.error("❌ 拦截下载失败:", error);
-                // 失败了不要紧，代码继续往下走，返回原始的缩略图 HTML 也是可以接受的
-            }
-
-        } else {
-            // throw new Error("找不到发送按钮"); 
-            // 建议改为 warn，因为有时候 Gemini 可能没生成完按钮，或者被风控
-            console.warn("⚠️ 找不到下载按钮，将使用原始预览图");
-        }
-        
-        // 返回处理过的（包含 Base64 的）HTML
-        return cloneBlock.innerHTML;
+    const lastBlock = findLatestImageReplyBlock() || await findLatestUsableReplyBlock();
+    if (!lastBlock || getReplyBlockImages(lastBlock).length === 0) {
+        console.warn("⚠️ 未找到包含生成图片的回答");
+        return false;
     }
-    
-    return lastBlock.innerHTML;
+
+    const prepareIntercept = () => new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: "prepare_intercept", task_id: task_id }, (response) => {
+            if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+            if (response && response.success) return resolve(response.data);
+            reject(new Error(response ? response.error : "Unknown error"));
+        });
+    });
+
+    try {
+        // Arm interception before the download click. Gemini can re-render the
+        // footer, so resolve the live button immediately before every click.
+        await prepareIntercept();
+        await new Promise(r => setTimeout(r, 1000));
+
+        const clickDownloadButton = () => {
+            const currentReplyBlock = findLatestImageReplyBlock() || lastBlock;
+            const currentButton = findImageDownloadButton(currentReplyBlock);
+            if (!currentButton) return false;
+            currentButton.click();
+            return true;
+        };
+
+        if (!clickDownloadButton()) {
+            console.warn("⚠️ 未找到图片下载按钮");
+            return false;
+        }
+
+        console.log("🚀 图片下载按钮已点击，等待拦截数据...");
+        let retryCount = 1;
+        const retryTimer = setInterval(() => {
+            retryCount++;
+            if (clickDownloadButton()) {
+                console.log(`🔄 第 ${retryCount} 次点击图片下载按钮...`);
+            } else {
+                console.warn(`⚠️ 第 ${retryCount} 次未找到图片下载按钮`);
+            }
+            if (retryCount >= 3) clearInterval(retryTimer);
+        }, 10000);
+        return true;
+    } catch (error) {
+        console.error("❌ 拦截图片下载失败:", error);
+        return false;
+    }
 }
 
 
@@ -706,7 +735,7 @@ async function downloadVideo(task_id) {
     await new Promise(r => setTimeout(r, 1000)); // 基础缓冲
 
     const responseBlocks = document.querySelectorAll('message-content');
-    if (responseBlocks.length === 0) return "未找到回答";
+    if (responseBlocks.length === 0) return false;
 
     // 查找包含“下载视频”属性的按钮；Gemini 可能在视频块后追加纯文本回复，所以倒序查找。
     let downloadBtn = null;
@@ -734,7 +763,7 @@ async function downloadVideo(task_id) {
                     }
                 });
             });
-            
+            await interceptPromise;
             await new Promise(r => setTimeout(r, 1000)); 
 
             const clickDownloadButton = () => {
@@ -749,11 +778,13 @@ async function downloadVideo(task_id) {
                 if (currentDownloadBtn) {
                     currentDownloadBtn.click();
                     console.log("🚀 '下载视频'已点击，由 Background 处理文件...");
+                    return true;
                 }
+                return false;
             };
 
             // 触发点击；如果页面下载事件没有立即生效，每 10 秒补点一次，最多 3 次。
-            clickDownloadButton();
+            if (!clickDownloadButton()) return false;
             let retryCount = 1;
             const retryTimer = setInterval(() => {
                 retryCount++;
@@ -762,11 +793,14 @@ async function downloadVideo(task_id) {
                     clearInterval(retryTimer);
                 }
             }, 10000);
+            return true;
         } catch (error) {
             console.error("❌ 拦截下载失败:", error);
+            return false;
         }
     } else {
         console.warn("⚠️ 页面未找到'下载视频'按钮");
+        return false;
     }
 }
 
@@ -1227,6 +1261,7 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
     const log = document.getElementById('status-log');
     if(log) log.innerText = `🚀 任务启动: ${task_id} (${action})`;
     let urlId = null;
+    let taskCompletionSent = false;
     try {
         // ==========================================
         // 1. 完整流程 (解开注释)
@@ -1404,19 +1439,31 @@ async function typeAndSend(text = "根据图片，生成一张有年代感的图
               }
             );
         });
-        
-        if(log) log.innerText = "✅ 完成! 任务ID: " + task_id;
-        
-        // 如果是生成图片，且包含原有下载逻辑，则执行下载
+        taskCompletionSent = true;
+
+        // Keep the panel in the downloading state until the background
+        // interceptor has been armed and Gemini's action has been clicked.
         if (action === "generate_image") {
-            await new Promise(r => setTimeout(r, 1000));
-             downloadImage(task_id); 
+            if (log) log.innerText = "📥 正在触发图片下载...";
+            if (!await downloadImage(task_id)) {
+                throw new Error("未能触发图片下载按钮");
+            }
         } else if (action === "generate_video") {
-             downloadVideo(task_id);
+            if (log) log.innerText = "📥 正在触发视频下载...";
+            if (!await downloadVideo(task_id)) {
+                throw new Error("未能触发视频下载按钮");
+            }
         }
+
+        if(log) log.innerText = "✅ 完成! 任务ID: " + task_id;
     } catch (err) {
         console.error("❌ 任务失败:", err);
         if(log) log.innerText = "❌ 错误: " + err.message;
+
+        // task_completed above already carries the generated result. Do not
+        // send a second, contradictory completion message if its download
+        // action could not be armed; the background can recover or time out.
+        if (taskCompletionSent) return;
 
         // ==========================================
         // 4. 发送错误消息给 Background (新增)
