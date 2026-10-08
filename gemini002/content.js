@@ -1116,6 +1116,7 @@ async function selectGeminiVideoAspectRatio(targetRatio = "16:9", options = {}) 
 
 async function selectGeminiModel(action, modelName, options = {}) {
     const { allowFallback = true, strict = false } = options;
+    const targetModel = (modelName && modelName.trim() !== '') ? modelName.trim() : "Pro";
     const modeBtnSelectors = [
         'div[aria-label*="打开模式选择器"]',
         'button[aria-label*="打开模式选择器"]',
@@ -1143,13 +1144,22 @@ async function selectGeminiModel(action, modelName, options = {}) {
         return false;
     }
 
+    const currentModelLabel = modeBtn.querySelector('.picker-primary-text');
+    const currentModelFromAria = (modeBtn.getAttribute('aria-label') || '')
+        .match(/当前模式为[“"]([^”"]+)[”"]/)?.[1];
+    const currentModel = (currentModelLabel?.textContent || currentModelFromAria || '')
+        .replace(/\s+/g, ' ').trim();
+    if (currentModel === targetModel) {
+        console.log(`🚀 [5/5] 当前已是 ${targetModel} 模式`);
+        return true;
+    }
+
     modeBtn.click();
     console.log("🚀 模式选择已点击");
 
     const menuItems = await waitForModeMenuItems();
     let foundTargetBtn = false;
     let quantityLimitReached = false;
-    const targetModel = (modelName && modelName.trim() !== '') ? modelName : "Pro";
 
     for (const item of menuItems) {
         const itemText = getMenuItemText(item);

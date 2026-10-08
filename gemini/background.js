@@ -276,8 +276,26 @@ function waitForAuxiliaryTabComplete(tabId, timeoutMs = 30000) {
     });
 }
 
+async function sendChatgptLibraryCleanupMessage(tabId) {
+    const startedAt = Date.now();
+    while (true) {
+        try {
+            return await chrome.tabs.sendMessage(tabId, {
+                action: "run_library_cleanup",
+                max_rounds: 1
+            });
+        } catch (error) {
+            const message = error && error.message ? error.message : String(error);
+            const contentScriptNotReady = /Receiving end does not exist|Could not establish connection/i.test(message);
+            if (!contentScriptNotReady || Date.now() - startedAt >= 30000) throw error;
+            await sleepForChatgptWorkCheck(500);
+        }
+    }
+}
+
 async function runChatgptLibraryCleanupForWork() {
     let cleanupTabId = null;
+    let completedRounds = 0;
     try {
         const tab = await new Promise((resolve, reject) => {
             chrome.tabs.create({ url: CHATGPT_LIBRARY_CLEANUP_URL, active: false }, (newTab) => {
@@ -309,11 +327,9 @@ async function runChatgptLibraryCleanupForWork() {
         await sleepForChatgptWorkCheck(2000);
         let lastResponse = null;
         for (let round = 1; round <= CHATGPT_LIBRARY_CLEANUP_ROUNDS; round += 1) {
+            console.log(`[ChatGPT Library Cleanup] 开始第 ${round}/${CHATGPT_LIBRARY_CLEANUP_ROUNDS} 轮`);
             lastResponse = await Promise.race([
-                chrome.tabs.sendMessage(cleanupTabId, {
-                    action: "run_library_cleanup",
-                    max_rounds: 1
-                }),
+                sendChatgptLibraryCleanupMessage(cleanupTabId),
                 new Promise((_, reject) => {
                     setTimeout(() => reject(new Error("ChatGPT library cleanup timed out")), CHATGPT_LIBRARY_CLEANUP_TIMEOUT);
                 })
@@ -321,6 +337,8 @@ async function runChatgptLibraryCleanupForWork() {
             if (!lastResponse || lastResponse.success !== true) {
                 throw new Error(lastResponse && lastResponse.error ? lastResponse.error : "ChatGPT library cleanup failed");
             }
+            completedRounds += lastResponse.completedRounds || 0;
+            console.log(`[ChatGPT Library Cleanup] 第 ${round} 轮结果:`, lastResponse);
             if (lastResponse.empty === true || round >= CHATGPT_LIBRARY_CLEANUP_ROUNDS) break;
 
             console.log(`[ChatGPT Library Cleanup] 第 ${round} 轮删除完成，等待页面更新后刷新继续`);
@@ -338,10 +356,10 @@ async function runChatgptLibraryCleanupForWork() {
             await sleepForChatgptWorkCheck(CHATGPT_LIBRARY_CLEANUP_SETTLE_DELAY);
         }
         console.log("[ChatGPT Library Cleanup] Work 同步清理结束:", lastResponse);
-        return lastResponse || { success: true, empty: true };
+        return { ...(lastResponse || { success: true, empty: true }), completedRounds };
     } catch (error) {
         console.warn("[ChatGPT Library Cleanup] Work 同步清理退出:", error);
-        return { success: false, error: error && error.message ? error.message : String(error) };
+        return { success: false, completedRounds, error: error && error.message ? error.message : String(error) };
     } finally {
         if (cleanupTabId) {
             chrome.tabs.remove(cleanupTabId, () => {
@@ -368,6 +386,7 @@ async function runChatgptWorkCheck() {
     const sequence = ++chatgptWorkCheckSequence;
     console.log(`[ChatGPT Work Check] 开始第 ${sequence} 次检查`);
     const libraryCleanupPromise = runChatgptLibraryCleanupForWork();
+    let workCheckResult = null;
 
     try {
         const tab = await new Promise((resolve, reject) => {
@@ -388,7 +407,8 @@ async function runChatgptWorkCheck() {
             throw new Error(response && response.error ? response.error : "ChatGPT Work check content script failed");
         }
         await postChatgptWorkCheckResult(sequence, true);
-        return { success: true, sequence };
+        workCheckResult = { success: true, sequence };
+        return workCheckResult;
     } catch (error) {
         console.warn(`[ChatGPT Work Check] 第 ${sequence} 次检查失败:`, error);
         try {
@@ -396,9 +416,14 @@ async function runChatgptWorkCheck() {
         } catch (postError) {
             console.warn("[ChatGPT Work Check] 失败结果上报失败:", postError);
         }
-        return { success: false, sequence, error: error && error.message ? error.message : String(error) };
+        workCheckResult = { success: false, sequence, error: error && error.message ? error.message : String(error) };
+        return workCheckResult;
     } finally {
-        await libraryCleanupPromise;
+        const libraryCleanupResult = await libraryCleanupPromise;
+        if (workCheckResult) workCheckResult.libraryCleanup = libraryCleanupResult;
+        if (!libraryCleanupResult.success) {
+            console.warn("[ChatGPT Library Cleanup] 定时清理未完成:", libraryCleanupResult);
+        }
         cleanupChatgptWorkCheck();
     }
 }

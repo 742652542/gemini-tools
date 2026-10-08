@@ -1838,7 +1838,14 @@ function createPanel() {
         }
 
         if (response && response.success) {
-          if (log) log.innerText = `✅ Work 检查完成，序号: ${response.sequence}`;
+          const cleanup = response.libraryCleanup;
+          if (log && cleanup && !cleanup.success) {
+            log.innerText = `⚠️ Work 检查完成，清理已删除 ${cleanup.completedRounds || 0} 页后失败：${cleanup.error || '未知错误'}`;
+          } else if (log && cleanup) {
+            log.innerText = `✅ Work 检查完成，清理已删除 ${cleanup.completedRounds || 0} 页`;
+          } else if (log) {
+            log.innerText = `✅ Work 检查完成，序号: ${response.sequence}`;
+          }
           return;
         }
 
