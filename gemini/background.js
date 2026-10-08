@@ -44,6 +44,7 @@ const GEMINI_USAGE_PAGE_TIMEOUT = 30000;
 const GEMINI_USAGE_MESSAGE_TIMEOUT = 20000;
 const AUTH_CODE_STORAGE_KEY = "gemini_bot_code";
 const CHATGPT_WORK_CHECK_URL = "https://chatgpt.com/";
+const ENABLE_CHATGPT_LIBRARY_CLEANUP = false;
 const CHATGPT_LIBRARY_CLEANUP_URL = "https://chatgpt.com/space?tab=all";
 const CHATGPT_LIBRARY_CLEANUP_ROUNDS = 2;
 const CHATGPT_LIBRARY_CLEANUP_TIMEOUT = 6 * 60 * 1000;
@@ -385,7 +386,9 @@ async function runChatgptWorkCheck() {
     chatgptWorkCheckInProgress = true;
     const sequence = ++chatgptWorkCheckSequence;
     console.log(`[ChatGPT Work Check] 开始第 ${sequence} 次检查`);
-    const libraryCleanupPromise = runChatgptLibraryCleanupForWork();
+    const libraryCleanupPromise = ENABLE_CHATGPT_LIBRARY_CLEANUP
+        ? runChatgptLibraryCleanupForWork()
+        : null;
     let workCheckResult = null;
 
     try {
@@ -419,10 +422,12 @@ async function runChatgptWorkCheck() {
         workCheckResult = { success: false, sequence, error: error && error.message ? error.message : String(error) };
         return workCheckResult;
     } finally {
-        const libraryCleanupResult = await libraryCleanupPromise;
-        if (workCheckResult) workCheckResult.libraryCleanup = libraryCleanupResult;
-        if (!libraryCleanupResult.success) {
-            console.warn("[ChatGPT Library Cleanup] 定时清理未完成:", libraryCleanupResult);
+        if (libraryCleanupPromise) {
+            const libraryCleanupResult = await libraryCleanupPromise;
+            if (workCheckResult) workCheckResult.libraryCleanup = libraryCleanupResult;
+            if (!libraryCleanupResult.success) {
+                console.warn("[ChatGPT Library Cleanup] 定时清理未完成:", libraryCleanupResult);
+            }
         }
         cleanupChatgptWorkCheck();
     }
