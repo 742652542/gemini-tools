@@ -44,7 +44,7 @@ const GEMINI_USAGE_PAGE_TIMEOUT = 30000;
 const GEMINI_USAGE_MESSAGE_TIMEOUT = 20000;
 const AUTH_CODE_STORAGE_KEY = "gemini_bot_code";
 const CHATGPT_WORK_CHECK_URL = "https://chatgpt.com/";
-const CHATGPT_LIBRARY_CLEANUP_URL = "https://chatgpt.com/library?tab=all";
+const CHATGPT_LIBRARY_CLEANUP_URL = "https://chatgpt.com/space?tab=all";
 const CHATGPT_LIBRARY_CLEANUP_ROUNDS = 2;
 const CHATGPT_LIBRARY_CLEANUP_TIMEOUT = 6 * 60 * 1000;
 const CHATGPT_WORK_CHECK_INTERVAL_TICKS = 36;
@@ -298,7 +298,7 @@ async function runChatgptLibraryCleanupForWork() {
         if (
             !loadedUrl ||
             loadedUrl.hostname !== "chatgpt.com" ||
-            loadedUrl.pathname !== "/library" ||
+            loadedUrl.pathname !== "/space" ||
             loadedUrl.searchParams.get("tab") !== "all"
         ) {
             console.warn("[ChatGPT Library Cleanup] 页面不正确，直接关闭标签页:", loadedTab.url);
