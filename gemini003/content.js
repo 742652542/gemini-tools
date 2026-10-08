@@ -988,6 +988,22 @@ async function selectGeminiGenerationTool(action, options = {}) {
     }
 
     if (!foundTargetBtn) {
+        const targetMenuText = action === "generate_video" ? "制作视频" : "制作图片";
+        const startTime = Date.now();
+        while (!foundTargetBtn && Date.now() - startTime < 5000) {
+            const menuItems = document.querySelectorAll('.cdk-overlay-pane gem-menu-item[role="menuitem"]');
+            for (const item of menuItems) {
+                if (isVisibleElement(item) && getMenuItemText(item) === targetMenuText) {
+                    foundTargetBtn = clickMenuItem(item);
+                    if (foundTargetBtn) console.log(`🚀 '${targetMenuText}'菜单项已点击`);
+                    break;
+                }
+            }
+            if (!foundTargetBtn) await new Promise(r => setTimeout(r, 200));
+        }
+    }
+
+    if (!foundTargetBtn) {
         console.warn(`⚠️ 未找到'${targetBtnText}'按钮`);
         if (strict) {
             return false;
