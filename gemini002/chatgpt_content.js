@@ -5,7 +5,7 @@ let uploadRequestLastDetail = null;
 let imageReplyFailureText = '';
 let libraryCleanupRunning = false;
 
-const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/library?tab=all';
+const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/space?tab=all';
 const LIBRARY_CLEANUP_STORAGE_KEY = 'chatgpt_library_cleanup_active';
 const LIBRARY_CLEANUP_RELOAD_COUNT_KEY = 'chatgpt_library_cleanup_reload_count';
 
@@ -1649,7 +1649,7 @@ async function runLibraryCleanup(options = {}) {
   try {
     sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
 
-    if (window.location.hostname !== 'chatgpt.com' || window.location.pathname !== '/library' || new URLSearchParams(window.location.search).get('tab') !== 'all') {
+    if (window.location.hostname !== 'chatgpt.com' || window.location.pathname !== '/space' || new URLSearchParams(window.location.search).get('tab') !== 'all') {
       if (!allowNavigation) {
         sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
         return {
