@@ -47,7 +47,7 @@ const CHATGPT_WORK_CHECK_URL = "https://chatgpt.com/";
 const CHATGPT_LIBRARY_CLEANUP_URL = "https://chatgpt.com/library?tab=all";
 const CHATGPT_LIBRARY_CLEANUP_ROUNDS = 2;
 const CHATGPT_LIBRARY_CLEANUP_TIMEOUT = 6 * 60 * 1000;
-const CHATGPT_WORK_CHECK_INTERVAL_TICKS = 24;
+const CHATGPT_WORK_CHECK_INTERVAL_TICKS = 36;
 const CHATGPT_WORK_CHECK_TIMEOUT = 5 * 60 * 1000;
 const CHATGPT_WORK_CHECK_PROMPTS = [
     "帮我看一下当前热门的新闻",
@@ -390,7 +390,7 @@ function maybeRunChatgptWorkCheck() {
     if (chatgptWorkCheckTickCount < CHATGPT_WORK_CHECK_INTERVAL_TICKS) return;
 
     if (hasRunningChatgptTask()) {
-        console.log("[ChatGPT Work Check] 已到 60 分钟，但 ChatGPT 任务正在执行，保留下次重试");
+        console.log("[ChatGPT Work Check] 已到 180 分钟，但 ChatGPT 任务正在执行，保留下次重试");
         return;
     }
 
