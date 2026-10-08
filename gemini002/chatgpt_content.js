@@ -8,6 +8,7 @@ let libraryCleanupRunning = false;
 const CHATGPT_LIBRARY_URL = 'https://chatgpt.com/space?tab=all';
 const LIBRARY_CLEANUP_STORAGE_KEY = 'chatgpt_library_cleanup_active';
 const LIBRARY_CLEANUP_RELOAD_COUNT_KEY = 'chatgpt_library_cleanup_reload_count';
+const LIBRARY_CLEANUP_SETTLE_DELAY = 5000;
 
 const injectedScript = document.createElement('script');
 injectedScript.src = chrome.runtime.getURL('chatgpt_injected.js');
@@ -1376,23 +1377,54 @@ function clickElementOnce(element) {
   return true;
 }
 
-function clickLibraryConfirmInPageContext(timeoutMs = 10000) {
+function clickLibraryConfirmInPageContext(timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const requestId = `library-delete-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let clickConfirmed = false;
     const cleanup = () => {
       clearTimeout(timer);
       window.removeEventListener('message', onResult);
     };
     const onResult = (event) => {
-      if (event.source !== window || !event.data || event.data.type !== 'CHATGPT_LIBRARY_CONFIRM_DELETE_RESULT') return;
+      if (event.source !== window || !event.data) return;
       if (event.data.requestId !== requestId) return;
+
+      if (event.data.type === 'CHATGPT_LIBRARY_CONFIRM_DELETE_RESULT') {
+        if (!event.data.success) {
+          cleanup();
+          reject(new Error(event.data.error || '页面上下文触发确认删除失败'));
+          return;
+        }
+        clickConfirmed = true;
+        return;
+      }
+
+      if (event.data.type !== 'CHATGPT_LIBRARY_DELETE_BATCH_RESULT') return;
       cleanup();
-      if (event.data.success) resolve(true);
-      else reject(new Error(event.data.error || '页面上下文触发确认删除失败'));
+
+      const result = event.data.data;
+      const failedFiles = result && Array.isArray(result.files)
+        ? result.files.filter((file) => !file || file.success !== true)
+        : [];
+      if (
+        clickConfirmed &&
+        event.data.responseOk === true &&
+        result &&
+        result.success === true &&
+        failedFiles.length === 0
+      ) {
+        resolve(result);
+        return;
+      }
+
+      const detail = event.data.error ||
+        (failedFiles.length > 0 ? `${failedFiles.length} 个文件删除失败` : '') ||
+        `HTTP ${event.data.status || 0}`;
+      reject(new Error(`批量删除请求失败: ${detail}`));
     };
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error('等待页面上下文触发确认删除超时'));
+      reject(new Error('等待批量删除请求结果超时'));
     }, timeoutMs);
 
     window.addEventListener('message', onResult);
@@ -1607,6 +1639,8 @@ function isRecoverableLibraryCleanupError(errorMessage) {
     '全选后未找到页面底部的删除按钮',
     '检测到残留删除确认框',
     '未找到删除确认框中的删除按钮',
+    '批量删除请求失败',
+    '等待批量删除请求结果超时',
     '点击确认删除后按钮未进入 loading 状态',
     '等待删除确认框关闭或恢复超时',
     '确认删除弹窗连续 3 次未自动关闭'
@@ -1665,7 +1699,6 @@ async function runLibraryCleanup(options = {}) {
     }
 
     let round = 0;
-    let consecutiveEmptyChecks = 0;
     while (sessionStorage.getItem(LIBRARY_CLEANUP_STORAGE_KEY) === '1') {
       round += 1;
       updateLibraryCleanupStatus(`⏳ 第 ${round} 轮：等待文件列表加载...`);
@@ -1679,21 +1712,21 @@ async function runLibraryCleanup(options = {}) {
       ), 30000, 500);
       if (!listReady) throw new Error('等待资料库列表加载超时');
 
-      if (getLibraryFileRowCount() === 0) {
-        consecutiveEmptyChecks += 1;
-        if (consecutiveEmptyChecks < 3) {
-          await sleep(2500);
-          continue;
-        }
-        if (hasExplicitLibraryEmptyState()) {
+      const listContent = await waitForCondition(() => (
+        getLibraryFileRowCount() > 0 ? 'files' : hasExplicitLibraryEmptyState() ? 'empty' : null
+      ), 30000, 500);
+      if (!listContent) throw new Error('资料库列表已显示，但未识别到文件行或明确的空状态');
+
+      if (listContent === 'empty') {
+        await sleep(2500);
+        if (getLibraryFileRowCount() === 0 && hasExplicitLibraryEmptyState()) {
           sessionStorage.removeItem(LIBRARY_CLEANUP_STORAGE_KEY);
           sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
           updateLibraryCleanupStatus(`✅ 清理完成，共执行 ${completedRounds} 轮`);
           break;
         }
-        throw new Error('资料库列表已显示，但未识别到文件行或明确的空状态');
+        continue;
       }
-      consecutiveEmptyChecks = 0;
 
       const selectAll = await waitForCondition(() => getLibrarySelectAllCheckbox(), 10000, 250);
       if (!selectAll) throw new Error('未找到资料库的“选择全部”复选框');
@@ -1726,30 +1759,13 @@ async function runLibraryCleanup(options = {}) {
       updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：已全选，正在请求删除...`);
       clickElementOnce(deleteButton);
 
-      let deleteDialogClosed = false;
-      for (let confirmAttempt = 1; confirmAttempt <= 3; confirmAttempt += 1) {
-        const confirmDeleteButton = await waitForCondition(() => getLibraryConfirmDeleteButton(), 10000, 200);
-        if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
+      const confirmDeleteButton = await waitForCondition(() => getLibraryConfirmDeleteButton(), 10000, 200);
+      if (!confirmDeleteButton) throw new Error('未找到删除确认框中的删除按钮');
 
-        const initialSpinnerCount = confirmDeleteButton.querySelectorAll(
-          '[role="progressbar"], [data-testid*="loading"], [data-testid*="spinner"], [class*="ButtonLoader-"], [class*="LoadingIndicator-"], [aria-label*="loading" i], [aria-label*="加载"], .animate-spin, svg'
-        ).length;
-        updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在确认删除（第 ${confirmAttempt}/3 次）...`);
-        await clickLibraryConfirmInPageContext();
-        await waitForLibraryConfirmDeleteLoading(confirmDeleteButton, initialSpinnerCount);
-        updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：按钮处于 loading，正在等待删除完成...`);
-
-        const dialogOutcome = await waitForLibraryDeleteDialogOutcome(confirmDeleteButton, initialSpinnerCount);
-        if (dialogOutcome === 'closed') {
-          deleteDialogClosed = true;
-          break;
-        }
-
-        if (confirmAttempt < 3) {
-          updateLibraryCleanupStatus(`⚠️ 第 ${round} 轮：loading 已结束但确认框仍在，准备再次点击删除...`);
-        }
-      }
-      if (!deleteDialogClosed) throw new Error('确认删除弹窗连续 3 次未自动关闭');
+      updateLibraryCleanupStatus(`🗑️ 第 ${round} 轮：正在确认删除并等待接口结果...`);
+      const deleteResult = await clickLibraryConfirmInPageContext();
+      const deletedFileCount = Array.isArray(deleteResult.files) ? deleteResult.files.length : 0;
+      updateLibraryCleanupStatus(`✅ 第 ${round} 轮接口删除成功，共删除 ${deletedFileCount} 个文件`);
 
       completedRounds += 1;
       sessionStorage.removeItem(LIBRARY_CLEANUP_RELOAD_COUNT_KEY);
@@ -1760,13 +1776,10 @@ async function runLibraryCleanup(options = {}) {
         return { success: true, completedRounds, limitReached: true };
       }
 
-      if (completedRounds >= 5) {
-        reloadLibraryCleanupAfterFiveRounds();
-        return { success: true, completedRounds, reloading: true };
-      }
-
-      updateLibraryCleanupStatus(`✅ 第 ${round} 轮删除完成，准备检查剩余文件...`);
-      await sleep(1500);
+      sessionStorage.setItem(LIBRARY_CLEANUP_STORAGE_KEY, '1');
+      updateLibraryCleanupStatus(`🔄 第 ${round} 轮删除完成，等待 5 秒后刷新页面继续...`);
+      setTimeout(() => window.location.reload(), LIBRARY_CLEANUP_SETTLE_DELAY);
+      return { success: true, completedRounds, reloading: true };
     }
     return { success: true, completedRounds, empty: true };
   } catch (err) {
