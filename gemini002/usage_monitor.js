@@ -74,7 +74,7 @@ function findPercentNearLabel(text, labelPatterns) {
         if (!labelPatterns.some((pattern) => pattern.test(line))) continue;
 
         for (let cursor = index; cursor < Math.min(lines.length, index + 6); cursor += 1) {
-            const percentMatch = lines[cursor].match(/\b\d{1,3}%\b/);
+            const percentMatch = lines[cursor].match(/\b\d{1,3}%(?!\d)/);
             if (percentMatch) {
                 return percentMatch[0];
             }
@@ -225,6 +225,31 @@ function extractUsageSnapshot() {
             weeklyCardText,
             snapshot
         });
+    }
+
+    const currentUsageCard = document.querySelector('[data-testid="current-usage"]');
+    const weeklyUsageCard = document.querySelector('[data-testid="weekly-usage"]');
+    if (currentUsageCard && weeklyUsageCard) {
+        const currentCardText = getTextContent(currentUsageCard);
+        const weeklyCardText = getTextContent(weeklyUsageCard);
+        const snapshot = {
+            current: {
+                usedText: firstMatch(currentCardText, /已使用\s*(\d{1,3}%)/),
+                resetTime: getResetTimestampFromText(firstMatch(currentCardText, /(重置时间[:：]\s*(?:\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\d{1,2}:\d{2}))/))
+            },
+            weekly: {
+                usedText: firstMatch(weeklyCardText, /已使用\s*(\d{1,3}%)/),
+                resetTime: getResetTimestampFromText(firstMatch(weeklyCardText, /(重置时间[:：]\s*(?:\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日\d{1,2}:\d{2}))/))
+            },
+            updatedAtText: getTextContent(document.querySelector('[data-testid="usage-updated"]')),
+            tier: findTier(getTextContent(document.querySelector('bard-sidenav-content'))) || "UNKNOWN"
+        };
+
+        if (snapshot.current.usedText && snapshot.weekly.usedText) {
+            console.log("[Gemini Usage] 通过新版用量卡片提取成功", snapshot);
+            console.log("[Gemini Usage] 提取结果(JSON)", JSON.stringify(snapshot));
+            return snapshot;
+        }
     }
 
     const rawPageText = document.body ? document.body.innerText || "" : "";
