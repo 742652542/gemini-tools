@@ -991,7 +991,7 @@ async function selectGeminiGenerationTool(action, options = {}) {
         const targetMenuText = action === "generate_video" ? "制作视频" : "制作图片";
         const startTime = Date.now();
         while (!foundTargetBtn && Date.now() - startTime < 5000) {
-            const menuItems = document.querySelectorAll('.cdk-overlay-pane gem-menu-item[role="menuitem"]');
+            const menuItems = document.querySelectorAll('.cdk-overlay-pane gem-menu-item[role="menuitem"], .cdk-overlay-pane gem-menu-item[role="menuitemcheckbox"]');
             for (const item of menuItems) {
                 if (isVisibleElement(item) && getMenuItemText(item) === targetMenuText) {
                     foundTargetBtn = clickMenuItem(item);
