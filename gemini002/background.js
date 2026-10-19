@@ -21,10 +21,13 @@ let preloadPrepareStarted = false;
 let preloadReadyAt = 0;
 let preloadHealthCheckFailures = 0;
 let preloadHealthCheckInFlight = false;
+// 独立于标签页清理状态，避免每次重建都把连续失败次数清零。
+let preloadConsecutiveFailures = 0;
 const ENABLE_PRELOAD = !DEBUG_STATUS;
 const ENABLE_USAGE_POLLING = !DEBUG_STATUS;
 const PRELOAD_MODEL = "Pro";
 const PRELOAD_PREPARE_TIMEOUT = 20000;
+const PRELOAD_MAX_CONSECUTIVE_FAILURES = 3;
 const TAB_HEALTH_CHECK_INTERVAL = 5000;
 const TAB_HEALTH_CHECK_GRACE = 10000;
 const TAB_HEALTH_MAX_FAILURES = 3;
@@ -633,7 +636,7 @@ function clearPreloadTab() {
 }
 
 function schedulePreloadRestore(delay = 500) {
-    if (!ENABLE_PRELOAD) return;
+    if (!ENABLE_PRELOAD || preloadConsecutiveFailures >= PRELOAD_MAX_CONSECUTIVE_FAILURES) return;
 
     if (preloadRestoreTimer) {
         clearTimeout(preloadRestoreTimer);
@@ -642,6 +645,19 @@ function schedulePreloadRestore(delay = 500) {
         preloadRestoreTimer = null;
         ensurePreloadTab();
     }, delay);
+}
+
+function handlePreloadFailure(reason, error) {
+    preloadConsecutiveFailures += 1;
+    console.warn(`⚠️ [Preload] ${reason} (${preloadConsecutiveFailures}/${PRELOAD_MAX_CONSECUTIVE_FAILURES})`, error || "");
+    clearPreloadTab();
+
+    if (preloadConsecutiveFailures >= PRELOAD_MAX_CONSECUTIVE_FAILURES) {
+        console.warn("⛔ [Preload] 连续失败 3 次，已停止自动预加载；请排查额度或按钮状态后重新加载扩展以恢复。");
+        return;
+    }
+
+    schedulePreloadRestore(3000);
 }
 
 function canReusePreloadForTask(task) {
@@ -666,6 +682,7 @@ function startPreloadPrepare(attemptId, attemptTabId, loadListener) {
         chrome.tabs.sendMessage(attemptTabId, { action: "prepare_gemini_image_preload" }).then((response) => {
             if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing") return;
             if (response && response.success === true) {
+                preloadConsecutiveFailures = 0;
                 preloadState = "ready";
                 preloadModel = PRELOAD_MODEL;
                 preloadReadyAt = Date.now();
@@ -679,18 +696,16 @@ function startPreloadPrepare(attemptId, attemptTabId, loadListener) {
                 return;
             }
 
-            throw new Error("Preload content script did not confirm success");
+            throw new Error(response && response.error ? response.error : "Preload content script did not confirm success");
         }).catch((err) => {
             if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId) return;
-            console.error("❌ [Preload] 预加载初始化失败:", err);
-            clearPreloadTab();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure("预加载初始化失败", err);
         });
     }, 3000);
 }
 
 function ensurePreloadTab() {
-    if (!ENABLE_PRELOAD) return;
+    if (!ENABLE_PRELOAD || preloadConsecutiveFailures >= PRELOAD_MAX_CONSECUTIVE_FAILURES) return;
 
     if (preloadState === "preparing" || preloadState === "ready") return;
 
@@ -708,9 +723,7 @@ function ensurePreloadTab() {
         }
 
         if (chrome.runtime.lastError || !newTab || !newTab.id) {
-            console.error("❌ [Preload] 预加载页创建失败", chrome.runtime.lastError);
-            clearPreloadState();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure("预加载页创建失败", chrome.runtime.lastError);
             return;
         }
 
@@ -718,9 +731,7 @@ function ensurePreloadTab() {
         preloadTabId = attemptTabId;
         preloadPrepareTimer = setTimeout(() => {
             if (preloadAttemptId !== attemptId || preloadTabId !== attemptTabId || preloadState !== "preparing") return;
-            console.error(`❌ [Preload] 预加载准备超时: ${attemptTabId}`);
-            clearPreloadTab();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure(`预加载准备超时: ${attemptTabId}`);
         }, PRELOAD_PREPARE_TIMEOUT);
 
         const loadListener = (updatedTabId, changeInfo) => {
@@ -999,9 +1010,7 @@ function checkPreloadTabHealth() {
         }
         preloadHealthCheckFailures += 1;
         if (preloadHealthCheckFailures >= PRELOAD_HEALTH_MAX_FAILURES) {
-            console.warn(`⚠️ [Preload] 预加载页心跳无响应，重新创建: ${tabId}`);
-            clearPreloadTab();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure(`预加载页心跳无响应: ${tabId}`);
         }
     }).catch((error) => {
         if (preloadTabId !== tabId || preloadState !== "ready") return;
@@ -1009,8 +1018,7 @@ function checkPreloadTabHealth() {
         preloadHealthCheckFailures += 1;
         console.warn(`⚠️ [Preload] 预加载页心跳失败 (${preloadHealthCheckFailures}/${PRELOAD_HEALTH_MAX_FAILURES}):`, error && error.message ? error.message : error);
         if (preloadHealthCheckFailures >= PRELOAD_HEALTH_MAX_FAILURES) {
-            clearPreloadTab();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure(`预加载页心跳失败: ${tabId}`, error);
         }
     });
 }
@@ -1381,8 +1389,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
     if (isManagedPreloadTab(tabId)) {
-        clearPreloadState();
-        schedulePreloadRestore(3000);
+        handlePreloadFailure(`预加载页被关闭或崩溃退出: ${tabId}`);
     }
 
     const taskId = findTaskIdByTabId(tabId);
@@ -1408,9 +1415,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
     if (isCrashTabState(tab, changeInfo)) {
         if (isManagedPreloadTab(tabId)) {
-            console.warn(`⚠️ [Preload] 检测到预加载页崩溃: ${tabId}`);
-            clearPreloadTab();
-            schedulePreloadRestore(3000);
+            handlePreloadFailure(`检测到预加载页崩溃: ${tabId}`);
             return;
         }
 
@@ -1424,9 +1429,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (!isManagedPreloadTab(tabId) || preloadState !== "ready") return;
     if (!changeInfo.url && changeInfo.status !== "loading") return;
 
-    console.warn(`⚠️ [Preload] 预加载页状态失效: ${tabId}`);
-    clearPreloadTab();
-    schedulePreloadRestore(3000);
+    handlePreloadFailure(`预加载页状态失效: ${tabId}`);
 });
 
 

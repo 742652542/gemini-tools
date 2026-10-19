@@ -451,11 +451,16 @@ function getReplyResponseScopes(block) {
 }
 
 function isUsableImageDownloadButton(button) {
-    if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true' ||
-        button.closest('[aria-disabled="true"]')) return false;
+    if (!button || button.matches(':disabled') || button.getAttribute('aria-disabled') === 'true' ||
+        button.closest('[aria-disabled="true"], [hidden], [inert], [aria-hidden="true"]')) return false;
 
     const style = window.getComputedStyle(button);
-    return style.display !== 'none' && style.visibility !== 'hidden' &&
+    // 图片上的下载按钮在未悬停时会继承 on-hover-button 的 visibility:hidden。
+    // 它仍有布局且可通过 click() 触发，不能和禁用或未渲染的按钮混为一谈。
+    const isHoverImageControl = !!button.closest('.on-hover-button') &&
+        !!button.closest('generated-image, single-image.generated-image, .generated-image-controls');
+    return style.display !== 'none' && style.visibility !== 'collapse' &&
+        (style.visibility !== 'hidden' || isHoverImageControl) &&
         button.getClientRects().length > 0;
 }
 
