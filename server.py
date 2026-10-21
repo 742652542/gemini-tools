@@ -1,8 +1,8 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 import base64
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal
 import uvicorn
 import json
 import random
@@ -12,6 +12,9 @@ import time
 import glob
 import hashlib
 import mimetypes
+import re
+import ntpath
+from urllib.parse import unquote
 from datetime import datetime, timedelta
 import subprocess
 from collections import deque
@@ -130,25 +133,87 @@ def upload_file_with_timeout(s3_client, file_path: str, bucket_name: str, object
         future = executor.submit(s3_client.upload_file, file_path, bucket_name, object_name)
         future.result(timeout=timeout_seconds)
 
-app = FastAPI()
+# Only explicitly declared project routes are exposed.
+app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None, redirect_slashes=False)
+
+
+@app.middleware("http")
+async def reject_unsafe_request_paths(request: Request, call_next):
+    raw_path = request.scope.get("raw_path", b"").decode("ascii", errors="replace")
+    path = unquote(raw_path or request.url.path)
+    # Reject traversal before routing, including encoded and double-encoded forms.
+    if ("\\" in path or "%" in path or ":" in path
+            or any(ord(char) < 32 or ord(char) == 127 for char in path)
+            or any(part in {".", ".."} for part in path.split("/"))):
+        return JSONResponse(status_code=400, content={"detail": "Invalid request path"})
+    return await call_next(request)
+
 DEBUG = False
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    # 获取原始请求体
-    body = await request.body()
-    print("--- 422 Validation Error ---")
-    print(f"Errors: {exc.errors()}")
-    print(f"Raw Body: {body.decode()}")
-    print("---------------------------")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": body.decode()},
-    )
+    # Never reflect raw bodies or validation inputs back to the caller.
+    return JSONResponse(status_code=422, content={"detail": "Invalid request parameters"})
 
 # === 配置：路径 ===
-RESULTS_DIR = "task_results"
-FILES_DIR = "task_files"
-WAIT_DIR = "task_wait"  # 排队任务保持扁平结构，方便排序
+# Preserve the existing working-directory storage locations, pinned at startup.
+STORAGE_BASE_DIR = os.path.abspath(os.curdir)
+RESULTS_DIR = os.path.join(STORAGE_BASE_DIR, "task_results")
+FILES_DIR = os.path.join(STORAGE_BASE_DIR, "task_files")
+WAIT_DIR = os.path.join(STORAGE_BASE_DIR, "task_wait")  # 排队任务保持扁平结构，方便排序
+
+WINDOWS_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    f"{prefix}{number}" for prefix in ("COM", "LPT") for number in "123456789¹²³"
+}
+
+
+def validate_identifier(value: str) -> str:
+    if (not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value)
+            or value.upper() in WINDOWS_DEVICE_NAMES):
+        raise HTTPException(status_code=400, detail="Invalid identifier")
+    return value
+
+
+def validate_file_path_parts(parts, *, allow_absolute: bool = False):
+    """Reject traversal, Windows device names, streams and control characters."""
+    for part in parts:
+        if not isinstance(part, str) or not part or "%" in part:
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        normalized = part.replace("\\", "/")
+        drive, _ = ntpath.splitdrive(part)
+        if not allow_absolute and (drive or normalized.startswith("/")):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        if drive and (os.name != "nt" or not ntpath.isabs(part) or drive.startswith("\\")):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        for component in normalized.split("/"):
+            if not component or (drive and component == drive):
+                continue
+            stem = component.split(".", 1)[0].rstrip(" ").upper()
+            if (component in {".", ".."} or component.endswith((".", " "))
+                    or stem in WINDOWS_DEVICE_NAMES
+                    or any(ord(c) < 32 or c in '<>:"|?*' or ord(c) == 127 for c in component)):
+                raise HTTPException(status_code=400, detail="Invalid file path")
+
+
+def validate_local_media_path(path: str) -> str:
+    # Download paths remain client-selected, as required by the existing workflow.
+    # Absolute arguments and shell=False keep filenames from becoming commands/options.
+    validate_file_path_parts((path,), allow_absolute=True)
+    return os.path.abspath(path)
+
+
+def safe_path(root: str, *parts: str, allow_absolute: bool = False) -> str:
+    """Validate before filesystem access, then confine resolved paths to a trusted root."""
+    validate_file_path_parts(parts, allow_absolute=allow_absolute)
+    resolved_root = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(root, *parts))
+    try:
+        contained = os.path.commonpath([resolved_root, candidate]) == resolved_root
+    except ValueError:
+        contained = False
+    if not contained or candidate == resolved_root:
+        raise HTTPException(status_code=400, detail="File path outside allowed directory")
+    return candidate
+
 
 for directory in [RESULTS_DIR, FILES_DIR, WAIT_DIR]:
     if not os.path.exists(directory):
@@ -238,7 +303,7 @@ def process_gemini_watermark(image_path: str) -> bool:
 
 # === 请求体模型 ===
 class TaskRequest(BaseModel):
-    action: str
+    action: Literal["", "generate_image", "generate_text", "generate_video"]
     prompt: str
     source: str = "gemini"
     model: str
@@ -307,6 +372,7 @@ def find_file_path(base_dir: str, task_id: str) -> Optional[str]:
     在 base_dir 中查找 {task_id}.json
     策略：只检查【今天】和【昨天】的文件夹，提升性能
     """
+    validate_identifier(task_id)
     target_filename = f"{task_id}.json"
     
     # 获取当前时间对象
@@ -321,9 +387,9 @@ def find_file_path(base_dir: str, task_id: str) -> Optional[str]:
     
     # 遍历检查
     for date_folder in check_dates:
-        full_path = os.path.join(base_dir, date_folder, target_filename)
+        full_path = safe_path(base_dir, date_folder, target_filename)
         # 只要找到一个存在的，立即返回
-        if os.path.exists(full_path):
+        if os.path.isfile(full_path):
             return full_path
 
     # 如果这两天都没找到
@@ -462,8 +528,8 @@ def get_waiting_count():
 
 def save_to_queue(task_payload: dict):
     timestamp = int(time.time() * 1000)
-    task_id = task_payload['task_id']
-    file_path = os.path.join(WAIT_DIR, f"{timestamp}_{task_id}.json")
+    task_id = validate_identifier(task_payload['task_id'])
+    file_path = safe_path(WAIT_DIR, f"{timestamp}_{task_id}.json")
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(task_payload, f, ensure_ascii=False, indent=2)
@@ -477,7 +543,7 @@ def pop_next_task():
     files = sorted(glob.glob(os.path.join(WAIT_DIR, "*.json")))
     if not files:
         return None
-    oldest_file = files[0]
+    oldest_file = safe_path(WAIT_DIR, os.path.basename(files[0]))
     try:
         with open(oldest_file, "r", encoding="utf-8") as f:
             task_data = json.load(f)
@@ -551,12 +617,13 @@ async def persist_task_file_in_background(task_id: str, data: dict):
 
 # === [修改] 辅助函数：按日期保存结果 ===
 def save_task_result(task_id: str, client_id: str, data: dict):
+    validate_identifier(task_id)
     # 获取任务 action
     action = data.get("action", "generate_image") # 默认为图片，兼容旧代码
     
     # 确定最终 JSON 存放目录
     date_folder = datetime.now().strftime("%Y-%m-%d")
-    target_dir = os.path.join(RESULTS_DIR, date_folder)
+    target_dir = safe_path(RESULTS_DIR, date_folder)
     os.makedirs(target_dir, exist_ok=True)
     
     # 1. 解码并上传图片；Gemini 图片保留原始文件，不再进行去水印处理
@@ -566,7 +633,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
 
         if isinstance(raw_images, list):
             # 建立任务专用的临时图片目录
-            temp_img_dir = os.path.join(target_dir, "temp_imgs", task_id)
+            temp_img_dir = safe_path(RESULTS_DIR, date_folder, "temp_imgs", task_id)
             os.makedirs(temp_img_dir, exist_ok=True)
 
             print(f"Processing images and uploading for task {task_id}")
@@ -582,7 +649,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
                     
                     # 动态获取扩展名
                     ext = get_image_extension(image_data)
-                    temp_file_path = os.path.join(temp_img_dir, f"{str(idx)}{ext}")
+                    temp_file_path = safe_path(RESULTS_DIR, date_folder, "temp_imgs", task_id, f"{idx}{ext}")
                     
                     # 保存为文件
                     with open(temp_file_path, "wb") as f:
@@ -615,7 +682,7 @@ def save_task_result(task_id: str, client_id: str, data: dict):
 
     # 保存最终结果 JSON
     data["client_id"] = client_id
-    file_path = os.path.join(target_dir, f"{task_id}.json")
+    file_path = safe_path(RESULTS_DIR, date_folder, f"{task_id}.json")
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -627,18 +694,21 @@ def save_task_result(task_id: str, client_id: str, data: dict):
         return False
 
 def save_task_file(task_id: str, data: dict):
+    validate_identifier(task_id)
     # 获取任务 action 和文件路径
     action = data.get("action", "generate_image")
     image_disk_path = data.get("file_path")
+    if image_disk_path:
+        image_disk_path = validate_local_media_path(image_disk_path)
     
     # 确定日期目录
     date_folder = datetime.now().strftime("%Y-%m-%d")
-    target_dir = os.path.join(FILES_DIR, date_folder)
+    target_dir = safe_path(FILES_DIR, date_folder)
     os.makedirs(target_dir, exist_ok=True)
 
     cdn_url = None
     
-    if image_disk_path and os.path.exists(image_disk_path):
+    if image_disk_path and os.path.isfile(image_disk_path):
         upload_file_path = image_disk_path
         _, file_extension = os.path.splitext(upload_file_path)
         if not file_extension:
@@ -648,14 +718,14 @@ def save_task_file(task_id: str, data: dict):
         if action == "generate_video":
             try:
                 subprocess.run(
-                    f'GeminiWatermarkTool-Video.exe "{image_disk_path}"',
-                    shell=True,
+                    ["GeminiWatermarkTool-Video.exe", image_disk_path],
+                    shell=False,
                     check=True
                 )
                 print(f"Video watermark processing successful: {image_disk_path}")
 
                 video_root, video_ext = os.path.splitext(image_disk_path)
-                processed_video_path = f"{video_root}_processed{video_ext}"
+                processed_video_path = validate_local_media_path(f"{video_root}_processed{video_ext}")
                 if os.path.exists(processed_video_path):
                     upload_file_path = processed_video_path
                     _, file_extension = os.path.splitext(upload_file_path)
@@ -678,7 +748,7 @@ def save_task_file(task_id: str, data: dict):
         result_data.pop("files", None)
     
     # 保存任务文件记录 JSON
-    file_path = os.path.join(target_dir, f"{task_id}.json")
+    file_path = safe_path(FILES_DIR, date_folder, f"{task_id}.json")
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(result_data, f, ensure_ascii=False, indent=2)
@@ -693,12 +763,24 @@ def save_task_file(task_id: str, data: dict):
 # === WebSocket 路由 ===
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    try:
+        validate_identifier(client_id)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await manager.connect(websocket, client_id)
     try:
         while True:
             data = await websocket.receive_text()
             try:
                 response = json.loads(data)
+                if not isinstance(response, dict):
+                    raise HTTPException(status_code=400, detail="Invalid message")
+                if (response.get("type") == "download_complete"
+                        or response.get("status") in ["success", "error"]):
+                    validate_identifier(response.get("task_id"))
+                    if response.get("file_path"):
+                        validate_local_media_path(response["file_path"])
                 
                 # 心跳
                 if response.get("type") == "ping":
@@ -725,8 +807,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 else:
                     pass
 
-            except json.JSONDecodeError:
-                pass
+            except (json.JSONDecodeError, HTTPException):
+                await websocket.send_json({"status": "error", "message": "Invalid message parameters"})
     except WebSocketDisconnect:
         manager.disconnect(client_id)
     except Exception as e:
@@ -738,6 +820,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 async def send_task(request: TaskRequest):
     print(f"[{request.client_id}] Task received: {request.action}")
     if request.client_id:
+        validate_identifier(request.client_id)
         is_continue = True
     else:
         is_continue = False
@@ -852,7 +935,7 @@ async def get_task_files(task_id: str):
             return {"status": "completed", "result": result_data}
 
         except Exception as e:
-            return {"status": "error", "message": f"读取失败: {str(e)}"}
+            return {"status": "error", "message": "读取失败"}
     
     # 检查排队
     queue_files = glob.glob(os.path.join(WAIT_DIR, f"*_{task_id}.json"))
