@@ -653,11 +653,19 @@ function handlePreloadFailure(reason, error) {
     clearPreloadTab();
 
     if (preloadConsecutiveFailures >= PRELOAD_MAX_CONSECUTIVE_FAILURES) {
-        console.warn("⛔ [Preload] 连续失败 3 次，已停止自动预加载；请排查额度或按钮状态后重新加载扩展以恢复。");
+        console.warn("⛔ [Preload] 连续失败 3 次，已停止自动预加载；任务执行成功后将自动恢复。");
         return;
     }
 
     schedulePreloadRestore(3000);
+}
+
+function restorePreloadAfterTaskSuccess() {
+    if (!ENABLE_PRELOAD || preloadConsecutiveFailures === 0) return;
+
+    preloadConsecutiveFailures = 0;
+    console.log("✅ [Preload] 任务执行成功，已清零连续失败次数并恢复自动预加载");
+    schedulePreloadRestore();
 }
 
 function canReusePreloadForTask(task) {
@@ -1322,6 +1330,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             closeTabAndCleanup(task_id);
         } else {
             // 成功分支
+            restorePreloadAfterTaskSuccess();
             console.log(`🎉 任务 [${task_id}] (${task_action}) 在页面执行成功，回传 Python`);
             const payload = {
                 status: "success",
